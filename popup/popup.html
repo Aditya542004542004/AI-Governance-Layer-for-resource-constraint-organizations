@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Governance Layer — Admin Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">AI Governance Layer</h1>
+          <span class="brand-subtitle">On-Device Privacy & Guardrails</span>
+        </div>
+      </div>
+      <div class="status-indicator">
+        <span class="status-dot active"></span>
+        <span class="status-text">Active</span>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </button>
+      <button class="nav-tab" data-tab="audit">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        Audit Log
+      </button>
+      <button class="nav-tab" data-tab="eval">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        Eval Suite
+      </button>
+    </nav>
+
+    <!-- Tab Contents -->
+    <main class="tab-content">
+
+      <!-- Settings Tab -->
+      <section id="tab-settings" class="tab-pane active">
+        <!-- Detection Modules Toggle Card -->
+        <div class="card">
+          <h2 class="card-title">Detection Engines</h2>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Regex Pattern Matcher</span>
+              <span class="setting-desc">Detects credit cards, API keys, emails, national IDs, and phone numbers.</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-regex" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Chrome Prompt API (On-Device Gemini Nano)</span>
+              <span class="setting-desc">Runs 100% on-device contextual LLM sensitivity classification.</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-llm" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Governance Thresholds & Role -->
+        <div class="card">
+          <h2 class="card-title">Policy & Role Controls</h2>
+
+          <div class="field-group">
+            <label for="select-role" class="field-label">Active User Role</label>
+            <select id="select-role" class="select-input">
+              <option value="engineering">Engineering (Role Multiplier: 1.0x)</option>
+              <option value="product">Product (Role Multiplier: 1.0x)</option>
+              <option value="executive">Executive (Role Multiplier: 1.2x)</option>
+              <option value="hr">Human Resources (Role Multiplier: 1.25x)</option>
+              <option value="finance">Finance (Role Multiplier: 1.3x)</option>
+              <option value="contractor">External Contractor (Role Multiplier: 1.35x)</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <div class="slider-header">
+              <label for="slider-block" class="field-label">Block Risk Threshold</label>
+              <span id="value-block" class="slider-value">75</span>
+            </div>
+            <input type="range" id="slider-block" min="50" max="89" value="75" class="range-slider">
+            <span class="field-help">Risk scores at or above this value trigger an immediate block. (Fixed Floor enforces absolute block at 90).</span>
+          </div>
+
+          <div class="field-group">
+            <div class="slider-header">
+              <label for="slider-redact" class="field-label">Redact Risk Threshold</label>
+              <span id="value-redact" class="slider-value">45</span>
+            </div>
+            <input type="range" id="slider-redact" min="20" max="74" value="45" class="range-slider">
+            <span class="field-help">Risk scores between Redact and Block suggest auto-redaction before sending.</span>
+          </div>
+        </div>
+
+        <!-- Optional Sync Card -->
+        <div class="card warning-card">
+          <div class="card-header-with-badge">
+            <h2 class="card-title warning-title">Metadata-Only Remote Sync</h2>
+            <span class="badge warning-badge">Optional</span>
+          </div>
+          
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Enable Metadata Sync</span>
+              <span class="setting-desc">Sync anonymized metadata (timestamp, risk score, decision, category) to local Express backend.</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="toggle-sync">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div id="sync-warning" class="warning-box hidden">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span><strong>Privacy Guarantee:</strong> Raw prompt content is NEVER included in metadata sync payloads. Only category labels, risk scores, and decisions are transmitted.</span>
+          </div>
+        </div>
+
+        <button id="btn-save-settings" class="btn btn-primary full-width">Save Settings</button>
+      </section>
+
+      <!-- Audit Log Tab -->
+      <section id="tab-audit" class="tab-pane">
+        <div class="audit-toolbar">
+          <input type="text" id="audit-search" placeholder="Search logs by keyword or category..." class="search-input">
+          <button id="btn-clear-audit" class="btn btn-danger-outline">Clear Logs</button>
+        </div>
+
+        <div id="audit-list" class="audit-list">
+          <div class="empty-state">Loading audit logs...</div>
+        </div>
+      </section>
+
+      <!-- Eval Suite Tab -->
+      <section id="tab-eval" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Research Evaluation Suite</h2>
+          <p class="card-desc">Run on-device evaluation benchmarking against synthetic labeled test datasets to produce precision, recall, F1, and Gemini Nano latency metrics.</p>
+          
+          <div class="eval-actions">
+            <button id="btn-launch-eval" class="btn btn-accent full-width">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Launch Evaluation Runner Page
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

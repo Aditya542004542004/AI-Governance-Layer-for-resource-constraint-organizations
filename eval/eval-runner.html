@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Governance — Research Evaluation Suite</title>
+  <link rel="stylesheet" href="../popup/popup.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      width: 100vw;
+      min-height: 100vh;
+      background-color: #0f172a;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+    .eval-container {
+      width: 100%;
+      max-width: 900px;
+    }
+    .header-box {
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .progress-bar-container {
+      width: 100%;
+      height: 10px;
+      background: #1e293b;
+      border-radius: 5px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #6366f1 0%, #10b981 100%);
+      transition: width 0.2s ease;
+    }
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 13px;
+    }
+    .results-table th, .results-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #334155;
+      text-align: left;
+    }
+    .results-table th {
+      background: #1e293b;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .log-box {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #38bdf8;
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="eval-container">
+    <div class="header-box">
+      <div>
+        <h1 style="font-size: 22px; font-weight: 700; color: #f8fafc;">On-Device AI Governance — Research Evaluation Suite</h1>
+        <p style="font-size: 13px; color: #94a3b8; margin-top: 4px;">Runs ablation benchmarking across synthetic labeled test prompts to evaluate Precision, Recall, F1, and Gemini Nano Latency.</p>
+      </div>
+      <div class="status-indicator">
+        <span class="status-dot active"></span>
+        <span id="prompt-api-status" class="status-text">Checking Prompt API...</span>
+      </div>
+    </div>
+
+    <!-- Execution Card -->
+    <div class="card">
+      <h2 class="card-title">Ablation Evaluation Controls</h2>
+      <p class="card-desc">Run both passes sequentially. Results JSON files will be automatically generated for consumption by the scoring script (eval/score.js).</p>
+
+      <div class="btn-group">
+        <button id="btn-run-regex-only" class="btn btn-primary">
+          Run Pass 1: Regex Only (LLM Disabled)
+        </button>
+        <button id="btn-run-hybrid" class="btn btn-accent">
+          Run Pass 2: Hybrid (Regex + On-Device Gemini Nano)
+        </button>
+      </div>
+
+      <div class="progress-bar-container">
+        <div id="progress-bar" class="progress-bar-fill"></div>
+      </div>
+      <div id="progress-status" style="font-size: 12px; color: #cbd5e1;">Ready to start evaluation.</div>
+    </div>
+
+    <!-- Results Downloads Card -->
+    <div class="card">
+      <h2 class="card-title">Export Results JSON Files</h2>
+      <p class="card-desc">Download generated evaluation result files to the <code>eval/</code> folder in your workspace for <code>node eval/score.js</code> analysis.</p>
+
+      <div class="btn-group">
+        <button id="btn-download-regex" class="btn btn-secondary" disabled>Download results-regex-only.json</button>
+        <button id="btn-download-hybrid" class="btn btn-secondary" disabled>Download results-regex-llm.json</button>
+      </div>
+    </div>
+
+    <!-- Live Execution Logs -->
+    <div class="card">
+      <h2 class="card-title">Execution Console Output</h2>
+      <div id="eval-console" class="log-box">Console initialized. Ready for benchmark execution...</div>
+    </div>
+  </div>
+
+  <script src="../detectors/regex.js"></script>
+  <script src="../detectors/llm.js"></script>
+  <script src="../engine/risk-score.js"></script>
+  <script src="../engine/policy.js"></script>
+  <script src="../engine/explain.js"></script>
+  <script src="eval-runner.js"></script>
+</body>
+</html>

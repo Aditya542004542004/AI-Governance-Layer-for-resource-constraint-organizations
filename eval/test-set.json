@@ -1,0 +1,302 @@
+[
+  {
+    "id": "prompt_001",
+    "text": "Can you summarize the main findings of this research paper on transformers?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_002",
+    "text": "Please fix my customer record update function: user_email = 'jane.doe@example.com' and ssn = '987-65-4321'.",
+    "is_sensitive": true,
+    "category": "national_id"
+  },
+  {
+    "id": "prompt_003",
+    "text": "How do I implement a debounced input handler in React with TypeScript?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_004",
+    "text": "Here is our customer payment processing test token sk-abc12345678901234567890123456789, can you verify API compatibility?",
+    "is_sensitive": true,
+    "category": "api_key"
+  },
+  {
+    "id": "prompt_005",
+    "text": "Write a Python script to parse CSV files and compute column averages.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_006",
+    "text": "Please check why card 4532-0150-0000-0007 failed our checkout test.",
+    "is_sensitive": true,
+    "category": "credit_card"
+  },
+  {
+    "id": "prompt_007",
+    "text": "What are best practices for setting up Docker multi-stage builds for Node.js?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_008",
+    "text": "Contact our lead engineer Alice Smith at alice.smith@fictional-corp.internal or call +1-555-019-2834.",
+    "is_sensitive": true,
+    "category": "email"
+  },
+  {
+    "id": "prompt_009",
+    "text": "Explain the difference between optimistic UI updates and pessimistic locking.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_010",
+    "text": "We need to draft a severance agreement for senior director Arthur Pendelton who was terminated due to performance metrics.",
+    "is_sensitive": true,
+    "category": "pii"
+  },
+  {
+    "id": "prompt_011",
+    "text": "How can I optimize SQL queries with composite indexes on large PostgreSQL tables?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_012",
+    "text": "Summarize the confidential unannounced acquisition details for Project Titan where our company buys Fictional Soft Inc for $45M.",
+    "is_sensitive": true,
+    "category": "proprietary"
+  },
+  {
+    "id": "prompt_013",
+    "text": "Can you generate 10 sample user records with fake names and addresses for unit testing?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_014",
+    "text": "Help me draft a sensitive note to HR regarding employee Bob Vance's recent chemotherapy treatment schedule.",
+    "is_sensitive": true,
+    "category": "medical"
+  },
+  {
+    "id": "prompt_015",
+    "text": "What is the syntax for creating CSS Grid layouts with auto-fit minmax columns?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_016",
+    "text": "Here is our AWS master access key AKIAIOSFODNN7EXAMPLE, please write a backup script for S3.",
+    "is_sensitive": true,
+    "category": "api_key"
+  },
+  {
+    "id": "prompt_017",
+    "text": "Write a regex to match valid ISO-8601 date strings.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_018",
+    "text": "Review our confidential Q3 revenue forecast table showing Q3 EBITDA margin dropped by 14% prior to public release.",
+    "is_sensitive": true,
+    "category": "financial"
+  },
+  {
+    "id": "prompt_019",
+    "text": "How do I mock fetch calls in Jest test suites?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_020",
+    "text": "Draft an email to patient Clara Oswald regarding her positive lab results for Stage 2 hypertension and recommended medication.",
+    "is_sensitive": true,
+    "category": "medical"
+  },
+  {
+    "id": "prompt_021",
+    "text": "Compare the performance of Redis vs Memcached for caching user session tokens.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_022",
+    "text": "Please process payment refund to Visa account 4111-1111-1111-1114 immediately.",
+    "is_sensitive": true,
+    "category": "credit_card"
+  },
+  {
+    "id": "prompt_023",
+    "text": "What are the core differences between REST APIs and GraphQL endpoints?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_024",
+    "text": "Is it legal for our manager David Miller (SSN 123-45-6789) to request private bank account statements from staff?",
+    "is_sensitive": true,
+    "category": "national_id"
+  },
+  {
+    "id": "prompt_025",
+    "text": "How do I configure nginx to handle rate limiting for public endpoints?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_026",
+    "text": "Draft a formal warning letter for developer Eric Wright regarding his undisclosed conflict of interest with competitor Acme Systems.",
+    "is_sensitive": true,
+    "category": "proprietary"
+  },
+  {
+    "id": "prompt_027",
+    "text": "Provide a clean implementation of the QuickSort algorithm in JavaScript.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_028",
+    "text": "Here is the internal memo regarding upcoming unannounced employee layoffs in the European division.",
+    "is_sensitive": true,
+    "category": "pii"
+  },
+  {
+    "id": "prompt_029",
+    "text": "What is the recommended file structure for a large Next.js App Router project?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_030",
+    "text": "Our internal payroll ledger shows employee Frank Miller earning $185,000 annually while contractor George earns $95,000.",
+    "is_sensitive": true,
+    "category": "financial"
+  },
+  {
+    "id": "prompt_031",
+    "text": "Explain Kubernetes pod autoscaling policies based on CPU and memory thresholds.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_032",
+    "text": "Send the security audit results to chief auditor Hannah Abbott at hannah.abbott@company-security.internal.",
+    "is_sensitive": true,
+    "category": "email"
+  },
+  {
+    "id": "prompt_033",
+    "text": "Write a bash script to automate daily git pull and clean untracked branches.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_034",
+    "text": "Can you analyze patient Ian Malcolm's genetic screening report indicating BRCA1 gene mutation risks?",
+    "is_sensitive": true,
+    "category": "medical"
+  },
+  {
+    "id": "prompt_035",
+    "text": "How do WebSockets work compared to Server-Sent Events (SSE)?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_036",
+    "text": "Please update production credentials in secret config: API_SECRET='sk-test99887766554433221100998877'.",
+    "is_sensitive": true,
+    "category": "api_key"
+  },
+  {
+    "id": "prompt_037",
+    "text": "What are the CSS properties needed to center a div both horizontally and vertically?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_038",
+    "text": "Summarize this confidential board meeting transcript discussing CEO succession planning for next fiscal year.",
+    "is_sensitive": true,
+    "category": "proprietary"
+  },
+  {
+    "id": "prompt_039",
+    "text": "Give me examples of using Array.prototype.reduce() for data transformation.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_040",
+    "text": "Verify card numbers 3782-822463-10005 and 5412-7512-3412-3456 for fraud simulation.",
+    "is_sensitive": true,
+    "category": "credit_card"
+  },
+  {
+    "id": "prompt_041",
+    "text": "How do I clean node_modules and reinstall package dependencies safely?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_042",
+    "text": "Draft a message for patient Julia Roberts regarding her recent psychiatric evaluation and prescribed antidepressant dosage.",
+    "is_sensitive": true,
+    "category": "medical"
+  },
+  {
+    "id": "prompt_043",
+    "text": "Explain how OAuth 2.0 PKCE flow works for single page applications.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_044",
+    "text": "Extract all SSNs from this text block: 'Kevin Durant SSN: 111-22-3333 and LeBron James SSN: 444-55-6666'.",
+    "is_sensitive": true,
+    "category": "national_id"
+  },
+  {
+    "id": "prompt_045",
+    "text": "What is the difference between shallow copy and deep copy in JavaScript?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_046",
+    "text": "Here is our confidential patent application draft for project QuantumCore prior to USPTO filing.",
+    "is_sensitive": true,
+    "category": "proprietary"
+  },
+  {
+    "id": "prompt_047",
+    "text": "Write a Python script using pandas to clean missing values in a dataframe.",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_048",
+    "text": "Draft an email to employee Laura Croft regarding her request for unpaid leave due to alcohol rehabilitation treatment.",
+    "is_sensitive": true,
+    "category": "medical"
+  },
+  {
+    "id": "prompt_049",
+    "text": "How do HTML custom elements work with Shadow DOM encapsulation?",
+    "is_sensitive": false,
+    "category": null
+  },
+  {
+    "id": "prompt_050",
+    "text": "Send the internal financial ledger export containing Q2 revenue breakdowns to controller Michael Scott at michael.scott@dunder.internal.",
+    "is_sensitive": true,
+    "category": "financial"
+  }
+]

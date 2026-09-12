@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "AI Governance Layer",
+  "version": "1.0.0",
+  "description": "Privacy-first, on-device Chrome extension governing employee prompt submissions to AI chat tools using hybrid regex and Gemini Nano on-device AI.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "lib/pdf-extract.js",
+        "lib/docx-extract.js",
+        "lib/xlsx-extract.js",
+        "detectors/file-extract.js",
+        "detectors/regex.js",
+        "detectors/llm.js",
+        "engine/risk-score.js",
+        "engine/policy.js",
+        "engine/explain.js",
+        "storage/audit.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "AI Governance Dashboard"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "eval/eval-runner.html",
+        "eval/eval-runner.js",
+        "eval/test-set.json"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
