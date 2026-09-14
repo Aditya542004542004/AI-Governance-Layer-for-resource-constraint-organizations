@@ -7,8 +7,9 @@
  */
 
 const DB_NAME = 'AIGovernanceDB';
-const DB_VERSION = 2; // Incremented for file governance index support
+const DB_VERSION = 3; // Incremented for SHA-256 file deduplication cache store
 const STORE_NAME = 'AuditLogs';
+const CACHE_STORE_NAME = 'fileHashCache';
 
 /**
  * Initializes and upgrades the IndexedDB database instance.
@@ -42,6 +43,11 @@ function initAuditDB() {
       if (!store.indexNames.contains('fileName')) {
         store.createIndex('fileName', 'fileName', { unique: false });
       }
+
+      // Non-destructive creation of fileHashCache for SHA-256 deduplication
+      if (!db.objectStoreNames.contains(CACHE_STORE_NAME)) {
+        db.createObjectStore(CACHE_STORE_NAME, { keyPath: 'hash' });
+      }
     };
 
     request.onsuccess = (event) => {
@@ -53,6 +59,77 @@ function initAuditDB() {
       reject(event.target.error);
     };
   });
+}
+
+/**
+ * Retrieves a cached audit evaluation result by file SHA-256 hash.
+ * @param {string} hash SHA-256 hash hex string
+ * @returns {Promise<Object|null>}
+ */
+async function getFileHashCache(hash) {
+  if (!hash || typeof hash !== 'string') return null;
+  try {
+    const db = await initAuditDB();
+    if (!db.objectStoreNames.contains(CACHE_STORE_NAME)) return null;
+
+    return new Promise((resolve) => {
+      const transaction = db.transaction([CACHE_STORE_NAME], 'readonly');
+      const store = transaction.objectStore(CACHE_STORE_NAME);
+      const request = store.get(hash);
+
+      request.onsuccess = (event) => {
+        resolve(event.target.result || null);
+      };
+      request.onerror = () => {
+        resolve(null);
+      };
+    });
+  } catch (err) {
+    console.error('[AI Governance] getFileHashCache exception:', err);
+    return null;
+  }
+}
+
+/**
+ * Saves a file audit evaluation result indexed by SHA-256 hash.
+ * @param {Object} cacheEntry Entry containing hash, decision, riskScore, timestamp, reasons, etc.
+ * @returns {Promise<boolean>}
+ */
+async function saveFileHashCache(cacheEntry) {
+  if (!cacheEntry || !cacheEntry.hash) return false;
+  try {
+    const db = await initAuditDB();
+    if (!db.objectStoreNames.contains(CACHE_STORE_NAME)) return false;
+
+    return new Promise((resolve) => {
+      const transaction = db.transaction([CACHE_STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(CACHE_STORE_NAME);
+
+      const record = {
+        hash: cacheEntry.hash,
+        decision: cacheEntry.action || cacheEntry.decision || 'allow',
+        riskScore: cacheEntry.riskScore || 0,
+        timestamp: cacheEntry.timestamp || new Date().toISOString(),
+        explanation: cacheEntry.explanation || '',
+        reasons: cacheEntry.reasons || [],
+        categories: cacheEntry.categories || [],
+        fileName: cacheEntry.fileName || 'unknown_file',
+        unscannable: Boolean(cacheEntry.unscannable),
+        fixedFloorTriggered: Boolean(cacheEntry.fixedFloorTriggered),
+        cached: true
+      };
+
+      const request = store.put(record);
+      request.onsuccess = () => resolve(true);
+      request.onerror = (err) => {
+        console.error('[AI Governance] Failed to save file hash cache:', err);
+        resolve(false);
+      };
+    });
+  } catch (err) {
+    console.error('[AI Governance] saveFileHashCache exception:', err);
+    return false;
+  }
 }
 
 /**
@@ -161,10 +238,28 @@ async function clearAuditRecords() {
 
 // Support both ES Modules and script environment exports
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { initAuditDB, logAuditRecord, getAuditRecords, clearAuditRecords };
-} else if (typeof globalThis !== 'undefined') {
+  module.exports = {
+    initAuditDB,
+    logAuditRecord,
+    getAuditRecords,
+    clearAuditRecords,
+    getFileHashCache,
+    saveFileHashCache
+  };
+}
+if (typeof globalThis !== 'undefined') {
   globalThis.initAuditDB = initAuditDB;
   globalThis.logAuditRecord = logAuditRecord;
   globalThis.getAuditRecords = getAuditRecords;
   globalThis.clearAuditRecords = clearAuditRecords;
+  globalThis.getFileHashCache = getFileHashCache;
+  globalThis.saveFileHashCache = saveFileHashCache;
+}
+if (typeof self !== 'undefined') {
+  self.initAuditDB = initAuditDB;
+  self.logAuditRecord = logAuditRecord;
+  self.getAuditRecords = getAuditRecords;
+  self.clearAuditRecords = clearAuditRecords;
+  self.getFileHashCache = getFileHashCache;
+  self.saveFileHashCache = saveFileHashCache;
 }

@@ -26,7 +26,7 @@ const REGEX_CONFIG = [
     category: 'api_key',
     label: 'API Secret / Key',
     // OpenAI keys (sk-...), AWS Access Keys (AKIA...), Bearer tokens, and explicit key assignments
-    pattern: /\b(?:sk-[a-zA-Z0-9]{20,T?|AKIA[0-9A-Z]{16}|[a-zA-Z0-9_-]{32,}|(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|bearer)\s*(?:is|:|=)?\s*[a-zA-Z0-9_-]{8,})\b/gi,
+    pattern: /\b(?:sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|[a-zA-Z0-9_-]{32,}|(?:(?:this\s+is\s+)?(?:my\s+)?(?:api|secret|access|auth|bearer)[\s_-]*(?:key|token|code)?)\s*(?:is|:|=)?\s*[a-zA-Z0-9_-]{8,})\b/gi,
     severity: 'critical'
   },
   {

@@ -288,10 +288,16 @@
 
   /**
    * Processes file attachments through on-device text extraction & governance evaluation.
+   * Supports multi-file parallel ingestion and progressive status feedback.
    */
   async function processFileGovernance(files, targetElement) {
-    for (const file of files) {
-      showFileCheckingOverlay(file.name);
+    if (!files || files.length === 0) return;
+
+    const extractedFilesData = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      showStatusChip(`Scanning File ${i + 1} of ${files.length}: ${file.name}...`);
 
       let extractedData = null;
       if (typeof extractTextFromFile === 'function') {
@@ -308,53 +314,59 @@
           reason: 'Extraction module unavailable.'
         };
       }
-
-      safeSendMessage(
-        {
-          type: 'ANALYZE_FILE',
-          payload: {
-            extractedData: extractedData,
-            destinationDomain: window.location.hostname
-          }
-        },
-        (response) => {
-          removeFileCheckingOverlay();
-
-          if (!response || !response.success) {
-            console.error('[AI Governance] Error analyzing file:', response?.error);
-            dispatchOriginalFileAttach(files, targetElement);
-            return;
-          }
-
-          const data = response.data;
-
-          if (data.action === 'block') {
-            showGovernanceModal({
-              action: 'block',
-              fileName: file.name,
-              riskScore: data.riskScore,
-              explanation: data.explanation,
-              reasons: data.reasons,
-              onDismiss: () => {}
-            });
-          } else if (data.action === 'redact') {
-            showGovernanceModal({
-              action: 'redact',
-              fileName: file.name,
-              riskScore: data.riskScore,
-              explanation: data.explanation,
-              reasons: data.reasons,
-              onRedactAndResend: () => {
-                dispatchOriginalFileAttach(files, targetElement);
-              },
-              onDismiss: () => {}
-            });
-          } else {
-            dispatchOriginalFileAttach(files, targetElement);
-          }
-        }
-      );
+      extractedFilesData.push({ file, extractedData });
     }
+
+    safeSendMessage(
+      {
+        type: 'ANALYZE_BATCH_FILES',
+        payload: {
+          files: extractedFilesData,
+          destinationDomain: window.location.hostname
+        }
+      },
+      (response) => {
+        removeStatusChip();
+        removeFileCheckingOverlay();
+
+        if (!response || !response.success) {
+          console.error('[AI Governance] Error analyzing batch files:', response?.error);
+          dispatchOriginalFileAttach(files, targetElement);
+          return;
+        }
+
+        const data = response.data;
+        const fileResults = data.fileResults || [];
+        const blockedFile = fileResults.find(r => r.action === 'block');
+
+        if (data.action === 'block' || blockedFile) {
+          const targetResult = blockedFile || fileResults[0] || {};
+          showGovernanceModal({
+            action: 'block',
+            fileName: targetResult.fileName || files[0].name,
+            riskScore: data.riskScore || targetResult.riskScore,
+            explanation: data.explanation || targetResult.explanation,
+            reasons: data.reasons || targetResult.reasons,
+            onDismiss: () => {}
+          });
+        } else if (data.action === 'redact') {
+          const redactFile = fileResults.find(r => r.action === 'redact') || fileResults[0] || {};
+          showGovernanceModal({
+            action: 'redact',
+            fileName: redactFile.fileName || files[0].name,
+            riskScore: data.riskScore || redactFile.riskScore,
+            explanation: data.explanation || redactFile.explanation,
+            reasons: data.reasons || redactFile.reasons,
+            onRedactAndResend: () => {
+              dispatchOriginalFileAttach(files, targetElement);
+            },
+            onDismiss: () => {}
+          });
+        } else {
+          dispatchOriginalFileAttach(files, targetElement);
+        }
+      }
+    );
   }
 
   function dispatchOriginalFileAttach(files, targetElement) {

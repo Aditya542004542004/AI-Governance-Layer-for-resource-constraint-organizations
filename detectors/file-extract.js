@@ -171,7 +171,19 @@ async function extractTextFromFile(fileInput) {
       result.reason = `Unrecognized document extension '.${ext}'. Fail-Closed Security Policy active.`;
     }
 
-    const text = result.fullText || '';
+    let text = result.fullText || '';
+
+    // Apply text normalization to strip multi-line whitespace and boilerplate filler
+    const normalizeFn = typeof normalizeText === 'function' 
+      ? normalizeText 
+      : (typeof globalThis !== 'undefined' && globalThis.normalizeText) 
+        ? globalThis.normalizeText 
+        : null;
+
+    if (normalizeFn) {
+      text = normalizeFn(text);
+    }
+
     const chunks = chunkText(text, 8000, 600);
 
     return {
@@ -200,10 +212,15 @@ async function extractTextFromFile(fileInput) {
   }
 }
 
-// Support both ES Modules and script environment exports
+// Universal Export Wrapper for Node.js, Web Worker, and Browser Contexts
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { extractTextFromFile, chunkText };
-} else if (typeof globalThis !== 'undefined') {
+}
+if (typeof globalThis !== 'undefined') {
   globalThis.extractTextFromFile = extractTextFromFile;
   globalThis.chunkText = chunkText;
+}
+if (typeof self !== 'undefined') {
+  self.extractTextFromFile = extractTextFromFile;
+  self.chunkText = chunkText;
 }

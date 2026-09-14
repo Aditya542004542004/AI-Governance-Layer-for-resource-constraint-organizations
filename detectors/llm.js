@@ -194,7 +194,8 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
 
 /**
  * Creates ONE LanguageModel session and reuses it across multiple document chunks.
- * Features timestamped performance logging and early short-circuiting.
+ * Integrates Heuristic Gatekeeper triage to bypass benign chunks, single-session reuse,
+ * and early exit on high-confidence detection.
  * @param {Array<{chunkIndex: number, text: string}>} chunks 
  * @returns {Promise<Array<Object>>}
  */
@@ -203,22 +204,57 @@ async function runMultiChunkLLMCheck(chunks = []) {
     return [];
   }
 
+  const results = [];
+  const candidateChunks = [];
+
+  // 1. Phase 1 Heuristic Gatekeeper Triage (Shannon Entropy & Keyword Anchors)
+  const triageCheckFn = typeof isChunkTriagedForLLM === 'function' 
+    ? isChunkTriagedForLLM 
+    : (typeof globalThis !== 'undefined' && globalThis.isChunkTriagedForLLM) 
+      ? globalThis.isChunkTriagedForLLM 
+      : null;
+
+  for (const chunk of chunks) {
+    const isTriaged = triageCheckFn ? triageCheckFn(chunk.text) : true;
+    if (!isTriaged) {
+      // Chunk is clean: bypass LLM inference completely
+      results.push({
+        chunkIndex: chunk.chunkIndex,
+        sensitive: false,
+        category: null,
+        confidence: 0,
+        skipped: true,
+        reason: 'Passed heuristic gatekeeper (clean)'
+      });
+    } else {
+      candidateChunks.push(chunk);
+    }
+  }
+
+  // If no chunks require LLM inference, return early
+  if (candidateChunks.length === 0) {
+    console.log(`[AI Governance Perf] Heuristic Gatekeeper cleared all ${chunks.length} chunks. Bypassing Prompt API LLM completely.`);
+    return results;
+  }
+
   const availability = await checkPromptAPIAvailability();
   if (availability === 'no' || availability === 'unavailable') {
-    console.warn(`[AI Governance Perf] Prompt API unavailable (${availability}). Multi-chunk check skipped.`);
-    return chunks.map(c => ({
-      chunkIndex: c.chunkIndex,
-      sensitive: false,
-      category: null,
-      confidence: 0,
-      skipped: true,
-      reason: `Prompt API unavailable (${availability})`
-    }));
+    console.warn(`[AI Governance Perf] Prompt API unavailable (${availability}). Multi-chunk check skipped for candidate chunks.`);
+    candidateChunks.forEach(c => {
+      results.push({
+        chunkIndex: c.chunkIndex,
+        sensitive: false,
+        category: null,
+        confidence: 0,
+        skipped: true,
+        reason: `Prompt API unavailable (${availability})`
+      });
+    });
+    return results;
   }
 
   const sessionStart = performance.now();
   let session = null;
-  const results = [];
 
   try {
     const systemPrompt = `You are a strict data security auditor running locally on-device.
@@ -242,14 +278,14 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
     const sessionTimeMs = Math.round(performance.now() - sessionStart);
-    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${chunks.length} chunks)`);
+    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${candidateChunks.length} triaged chunks out of ${chunks.length} total)`);
 
     if (!session) {
       throw new Error('Failed to instantiate LanguageModel session');
     }
 
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
+    for (let i = 0; i < candidateChunks.length; i++) {
+      const chunk = candidateChunks[i];
       const chunkStart = performance.now();
 
       const responseText = await session.prompt(`Analyze prompt: "${chunk.text}"`);
@@ -261,24 +297,37 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
         chunkIndex: chunk.chunkIndex,
         sensitive: Boolean(parsedResult.sensitive),
         category: parsedResult.category || (parsedResult.sensitive ? 'confidential_context' : null),
-        confidence: typeof parsedResult.confidence === 'number' ? parsedResult.confidence : (parsedResult.sensitive ? 0.8 : 0.0),
+        confidence: typeof parsedResult.confidence === 'number' ? parsedResult.confidence : (parsedResult.sensitive ? 0.85 : 0.0),
         skipped: false,
         latencyMs: chunkInferenceMs
       };
 
-      console.log(`[AI Governance Perf] Chunk ${i + 1}/${chunks.length} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
+      console.log(`[AI Governance Perf] Chunk ${i + 1}/${candidateChunks.length} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
 
       results.push(chunkResult);
 
-      // Short-circuit performance optimization: if chunk is flagged with high confidence (>= 0.8), stop remaining chunks!
-      if (chunkResult.sensitive && chunkResult.confidence >= 0.8) {
-        console.log(`[AI Governance Perf] Short-circuit triggered on chunk ${i + 1}/${chunks.length}. Halting remaining chunk evaluations.`);
+      // EARLY EXIT Optimization: If candidate chunk returns sensitive with confidence >= 0.85, abort remaining chunk evaluations immediately!
+      if (chunkResult.sensitive && chunkResult.confidence >= 0.85) {
+        console.log(`[AI Governance Perf] Early Exit triggered on chunk ${i + 1}/${candidateChunks.length} (Confidence: ${chunkResult.confidence}). Halting remaining chunk evaluations.`);
         break;
       }
     }
 
   } catch (err) {
-    console.error('[AI Governance Perf] Error in runMultiChunkLLMCheck:', err);
+    console.error('[AI Governance Perf] Error in runMultiChunkLLMCheck (graceful fallback active):', err);
+    // Graceful fallback for remaining candidate chunks
+    candidateChunks.forEach(c => {
+      if (!results.some(r => r.chunkIndex === c.chunkIndex)) {
+        results.push({
+          chunkIndex: c.chunkIndex,
+          sensitive: false,
+          category: null,
+          confidence: 0,
+          skipped: true,
+          reason: err.message || 'LLM execution exception'
+        });
+      }
+    });
   } finally {
     if (session && typeof session.destroy === 'function') {
       try { session.destroy(); } catch (_) {}
@@ -288,11 +337,17 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
   return results;
 }
 
-// Support both ES Modules and script environment exports
+// Universal Export Wrapper for Node.js, Web Worker, and Browser Contexts
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { runLLMCheck, runMultiChunkLLMCheck, checkPromptAPIAvailability };
-} else if (typeof globalThis !== 'undefined') {
+}
+if (typeof globalThis !== 'undefined') {
   globalThis.runLLMCheck = runLLMCheck;
   globalThis.runMultiChunkLLMCheck = runMultiChunkLLMCheck;
   globalThis.checkPromptAPIAvailability = checkPromptAPIAvailability;
+}
+if (typeof self !== 'undefined') {
+  self.runLLMCheck = runLLMCheck;
+  self.runMultiChunkLLMCheck = runMultiChunkLLMCheck;
+  self.checkPromptAPIAvailability = checkPromptAPIAvailability;
 }

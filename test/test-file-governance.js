@@ -126,9 +126,40 @@ function testFailClosedPolicyForImages() {
   console.log('  ✓ Fail-Closed Policy test passed.');
 }
 
+const { normalizeText, calculateShannonEntropy, isChunkTriagedForLLM, hasHighEntropyTokens } = require('../engine/preprocess.js');
+const { runMultiChunkLLMCheck } = require('../detectors/llm.js');
+
+function testTextPreprocessAndEntropyTriage() {
+  console.log('Testing Text Normalization, Shannon Entropy & Heuristic Gatekeeper...');
+
+  // 1. Normalization
+  const rawText = 'Line 1\n\n\n\nLine 2   \n=============\nLine 3';
+  const normalized = normalizeText(rawText);
+  assert.strictEqual(normalized.includes('\n\n\n'), false, 'Normalizer should collapse 3+ newlines');
+  assert.strictEqual(normalized.includes('============='), false, 'Normalizer should strip repetitive low-entropy separator lines');
+
+  // 2. Shannon Entropy calculation
+  const lowEntropyStr = 'aaaaaaaaaaaaaaaaaaaaaaaa'; // Single repeated character
+  const highEntropyStr = '9A8f17k3LmZpQx9vW2tR0sY'; // Random high-entropy token
+  assert.strictEqual(calculateShannonEntropy(lowEntropyStr), 0, 'Repeated char entropy should be 0');
+  assert.strictEqual(calculateShannonEntropy(highEntropyStr) > 4.0, true, 'Random string should have high entropy');
+
+  // 3. Heuristic Gatekeeper Triage
+  const cleanChunk = 'This is a normal paragraph discussing solar panels and renewable energy efficiency.';
+  const sensitiveKeywordChunk = 'Please review the internal confidential salary distribution spreadsheet.';
+  const highEntropyTokenChunk = 'Access secret key: 9A8f17k3LmZpQx9vW2tR0sY9900223344';
+
+  assert.strictEqual(isChunkTriagedForLLM(cleanChunk), false, 'Clean chunk MUST bypass LLM triage');
+  assert.strictEqual(isChunkTriagedForLLM(sensitiveKeywordChunk), true, 'Sensitive keyword chunk MUST be triaged for LLM');
+  assert.strictEqual(isChunkTriagedForLLM(highEntropyTokenChunk), true, 'High entropy token chunk MUST be triaged for LLM');
+
+  console.log('  ✓ Text Normalization, Shannon Entropy & Heuristic Gatekeeper tests passed.');
+}
+
 async function runAllFileGovernanceTests() {
   console.log('\n--- Running File Upload Governance Unit Tests ---');
   await testFileTextExtraction();
+  testTextPreprocessAndEntropyTriage();
   testSingleChunkSensitivityPreservation();
   testFailClosedPolicyForImages();
   console.log('--- All File Upload Governance Tests Passed Successfully! ---\n');

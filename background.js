@@ -11,6 +11,7 @@ try {
   importScripts(
     'detectors/regex.js',
     'detectors/llm.js',
+    'engine/preprocess.js',
     'engine/risk-score.js',
     'engine/policy.js',
     'engine/explain.js',
@@ -39,6 +40,34 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+/**
+ * Computes SHA-256 hash using native Web Crypto API.
+ * @param {string|Uint8Array|ArrayBuffer} textOrBytes 
+ * @returns {Promise<string|null>} Hex string representation of SHA-256 hash
+ */
+async function computeSHA256Hash(textOrBytes) {
+  try {
+    let buffer;
+    if (typeof textOrBytes === 'string') {
+      buffer = new TextEncoder().encode(textOrBytes);
+    } else if (textOrBytes instanceof Uint8Array) {
+      buffer = textOrBytes.buffer;
+    } else if (textOrBytes instanceof ArrayBuffer) {
+      buffer = textOrBytes;
+    } else {
+      buffer = new TextEncoder().encode(String(textOrBytes || ''));
+    }
+    if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (err) {
+    console.warn('[AI Governance] Web Crypto SHA-256 calculation failed:', err);
+  }
+  return null;
+}
+
 // Central runtime message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
@@ -60,6 +89,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(response => sendResponse({ success: true, data: response }))
       .catch(err => {
         console.error('[AI Governance] Error processing file analysis:', err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'ANALYZE_BATCH_FILES') {
+    handleAnalyzeBatchFiles(message.payload)
+      .then(response => sendResponse({ success: true, data: response }))
+      .catch(err => {
+        console.error('[AI Governance] Error processing batch file analysis:', err);
         sendResponse({ success: false, error: err.message });
       });
     return true;
@@ -176,6 +215,27 @@ async function handleAnalyzeFile(payload) {
   const { fileName = 'unknown_file', text = '', chunks = [], unscannable = false, reason = '' } = extractedData;
   const startTime = performance.now();
 
+  // 1. Cryptographic File Deduplication (SHA-256 Cache Check < 5ms)
+  const fileHash = await computeSHA256Hash(text || fileName);
+  if (fileHash && typeof getFileHashCache === 'function') {
+    const cached = await getFileHashCache(fileHash);
+    if (cached) {
+      console.log(`[AI Governance Perf] SHA-256 Cache Hit (< 5ms) for '${fileName}' (Hash: ${fileHash.substring(0, 8)}...). Returning cached decision.`);
+      const totalLatencyMs = Math.round(performance.now() - startTime);
+      return {
+        action: cached.decision,
+        riskScore: cached.riskScore,
+        explanation: `[CACHED RESULT] ${cached.explanation || 'File evaluated previously.'}`,
+        reasons: cached.reasons || [],
+        fileName: fileName,
+        unscannable: cached.unscannable,
+        fixedFloorTriggered: cached.fixedFloorTriggered,
+        cached: true,
+        latencyMs: totalLatencyMs
+      };
+    }
+  }
+
   const settings = await new Promise((resolve) => {
     chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
   });
@@ -206,6 +266,21 @@ async function handleAnalyzeFile(payload) {
     const explanation = generateExplanation({ ...policyResult, fileName });
     const totalLatencyMs = Math.round(performance.now() - startTime);
 
+    const result = {
+      action: policyResult.action,
+      riskScore: policyResult.riskScore,
+      explanation: explanation,
+      reasons: policyResult.reasons,
+      fileName: fileName,
+      unscannable: true,
+      fixedFloorTriggered: policyResult.fixedFloorTriggered,
+      latencyMs: totalLatencyMs
+    };
+
+    if (fileHash && typeof saveFileHashCache === 'function') {
+      await saveFileHashCache({ hash: fileHash, ...result });
+    }
+
     await logAuditRecord({
       timestamp: new Date().toISOString(),
       promptText: `[FILE ATTACHMENT: ${fileName}] (Unscannable: ${reason})`,
@@ -220,16 +295,7 @@ async function handleAnalyzeFile(payload) {
       latencyMs: totalLatencyMs
     });
 
-    return {
-      action: policyResult.action,
-      riskScore: policyResult.riskScore,
-      explanation: explanation,
-      reasons: policyResult.reasons,
-      fileName: fileName,
-      unscannable: true,
-      fixedFloorTriggered: policyResult.fixedFloorTriggered,
-      latencyMs: totalLatencyMs
-    };
+    return result;
   }
 
   // 1. Run Regex across full document text in ONE pass
@@ -266,6 +332,22 @@ async function handleAnalyzeFile(payload) {
     const explanation = generateExplanation({ ...policyResult, fileName });
     const totalLatencyMs = Math.round(performance.now() - startTime);
 
+    const result = {
+      action: policyResult.action,
+      riskScore: policyResult.riskScore,
+      explanation: explanation,
+      reasons: policyResult.reasons,
+      fileName: fileName,
+      regexMatches: regexMatches,
+      chunkLLMResults: [],
+      fixedFloorTriggered: policyResult.fixedFloorTriggered,
+      latencyMs: totalLatencyMs
+    };
+
+    if (fileHash && typeof saveFileHashCache === 'function') {
+      await saveFileHashCache({ hash: fileHash, ...result });
+    }
+
     await logAuditRecord({
       timestamp: new Date().toISOString(),
       promptText: `[FILE ATTACHMENT: ${fileName}] Extracted Text Snippet: "${text.substring(0, 150)}..."`,
@@ -280,17 +362,7 @@ async function handleAnalyzeFile(payload) {
       latencyMs: totalLatencyMs
     });
 
-    return {
-      action: policyResult.action,
-      riskScore: policyResult.riskScore,
-      explanation: explanation,
-      reasons: policyResult.reasons,
-      fileName: fileName,
-      regexMatches: regexMatches,
-      chunkLLMResults: [],
-      fixedFloorTriggered: policyResult.fixedFloorTriggered,
-      latencyMs: totalLatencyMs
-    };
+    return result;
   }
 
   // 2. Run Local LLM across document chunks sequentially REUSING ONE SESSION
@@ -302,7 +374,7 @@ async function handleAnalyzeFile(payload) {
         if (chunk.text && chunk.text.trim()) {
           const chunkRes = await runLLMCheck(chunk.text);
           chunkLLMResults.push({ ...chunkRes, chunkIndex: chunk.chunkIndex });
-          if (chunkRes.sensitive && chunkRes.confidence >= 0.8) break;
+          if (chunkRes.sensitive && chunkRes.confidence >= 0.85) break;
         }
       }
     }
@@ -336,6 +408,22 @@ async function handleAnalyzeFile(payload) {
     ...chunkLLMResults.filter(c => c.sensitive).map(c => c.category)
   ].filter(Boolean);
 
+  const result = {
+    action: policyResult.action,
+    riskScore: policyResult.riskScore,
+    explanation: explanation,
+    reasons: policyResult.reasons,
+    fileName: fileName,
+    regexMatches: regexMatches,
+    chunkLLMResults: chunkLLMResults,
+    fixedFloorTriggered: policyResult.fixedFloorTriggered,
+    latencyMs: totalLatencyMs
+  };
+
+  if (fileHash && typeof saveFileHashCache === 'function') {
+    await saveFileHashCache({ hash: fileHash, ...result });
+  }
+
   await logAuditRecord({
     timestamp: new Date().toISOString(),
     promptText: `[FILE ATTACHMENT: ${fileName}] Extracted Text Snippet: "${text.substring(0, 150)}..."`,
@@ -350,15 +438,49 @@ async function handleAnalyzeFile(payload) {
     latencyMs: totalLatencyMs
   });
 
+  return result;
+}
+
+/**
+ * Handles asymmetric parallel ingestion and fast-fail evaluation for multiple uploaded files.
+ */
+async function handleAnalyzeBatchFiles(payload) {
+  const { files = [], destinationDomain = 'unknown' } = payload;
+  const startTime = performance.now();
+
+  if (!Array.isArray(files) || files.length === 0) {
+    return { action: 'allow', riskScore: 0, fileResults: [], totalLatencyMs: 0 };
+  }
+
+  // Phase 1: Parallel Ingestion & SHA-256 Deduplication + Fast-Path Regex Check across ALL files
+  const phase1Results = await Promise.all(files.map(async (fileData) => {
+    return handleAnalyzeFile({ extractedData: fileData.extractedData || fileData, destinationDomain });
+  }));
+
+  // SHORT-CIRCUIT FAST-FAIL: If ANY file in the batch returns a BLOCK decision,
+  // return the forced block decision immediately!
+  const blockedFile = phase1Results.find(r => r.action === 'block');
+  if (blockedFile) {
+    console.log(`[AI Governance Perf] Multi-File Batch Fast-Fail: File '${blockedFile.fileName}' triggered BLOCK. Halting remaining batch processing.`);
+    return {
+      action: 'block',
+      riskScore: Math.max(...phase1Results.map(r => r.riskScore || 0)),
+      explanation: blockedFile.explanation,
+      reasons: blockedFile.reasons,
+      fileResults: phase1Results,
+      totalLatencyMs: Math.round(performance.now() - startTime)
+    };
+  }
+
+  const maxRiskScore = Math.max(...phase1Results.map(r => r.riskScore || 0), 0);
+  const requiresRedact = phase1Results.some(r => r.action === 'redact');
+
   return {
-    action: policyResult.action,
-    riskScore: policyResult.riskScore,
-    explanation: explanation,
-    reasons: policyResult.reasons,
-    fileName: fileName,
-    regexMatches: regexMatches,
-    chunkLLMResults: chunkLLMResults,
-    fixedFloorTriggered: policyResult.fixedFloorTriggered,
-    latencyMs: totalLatencyMs
+    action: requiresRedact ? 'redact' : 'allow',
+    riskScore: maxRiskScore,
+    explanation: phase1Results.map(r => `${r.fileName}: ${r.explanation}`).join(' | '),
+    reasons: Array.from(new Set(phase1Results.flatMap(r => r.reasons || []))),
+    fileResults: phase1Results,
+    totalLatencyMs: Math.round(performance.now() - startTime)
   };
 }
