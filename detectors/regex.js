@@ -6,6 +6,33 @@
  * Includes Luhn algorithm validation for credit card detection.
  */
 
+// Common English technical/academic dictionary words that should never be flagged as secret API tokens
+const COMMON_ENGLISH_WORDS = new Set([
+  'imported', 'attached', 'generated', 'implementation', 'protocol', 'management',
+  'variable', 'framework', 'function', 'server', 'endpoint', 'system', 'process',
+  'services', 'security', 'database', 'overview', 'architecture', 'application',
+  'component', 'interface', 'configuration', 'parameter', 'response', 'request',
+  'payload', 'research', 'encrypted', 'encryption', 'algorithm', 'operation',
+  'operations', 'generation', 'authentication', 'verification', 'mechanism',
+  'pipeline', 'definition', 'execution', 'interception', 'middleware'
+]);
+
+/**
+ * Validates API Key matches to discard false positives on standard English prose.
+ */
+function validateApiKeyMatch(matchStr) {
+  if (!matchStr || typeof matchStr !== 'string') return false;
+  
+  const parts = matchStr.split(/[:=]|\bis\b/i);
+  if (parts.length > 1) {
+    const candidate = parts[parts.length - 1].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+    if (COMMON_ENGLISH_WORDS.has(candidate)) {
+      return false; // Discard false positive English prose matches
+    }
+  }
+  return true;
+}
+
 // Configurable regex patterns and detection definitions
 const REGEX_CONFIG = [
   {
@@ -25,8 +52,9 @@ const REGEX_CONFIG = [
   {
     category: 'api_key',
     label: 'API Secret / Key',
-    // OpenAI keys (sk-...), AWS Access Keys (AKIA...), Bearer tokens, and explicit key assignments
-    pattern: /\b(?:sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|[a-zA-Z0-9_-]{32,}|(?:(?:this\s+is\s+)?(?:my\s+)?(?:api|secret|access|auth|bearer)[\s_-]*(?:key|token|code)?)\s*(?:is|:|=)?\s*[a-zA-Z0-9_-]{8,})\b/gi,
+    // High-precision provider keys (sk-..., AKIA..., AIza..., ghp_..., xox...) & explicit secret key-value assignments
+    pattern: /\b(?:sk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z-_]{35}|gh[pousr]_[A-Za-z0-9_]{36,}|xox[baprs]-[a-zA-Z0-9]{10,}|[a-zA-Z0-9_-]{32,}|(?:[A-Za-z0-9_]*(?:SECRET|KEY|PASSWORD|TOKEN|AUTH|PASS|CREDENTIAL|PRIVATE|DATABASE_URL|DB_URL)[A-Za-z0-9_]*)\s*[:=]\s*(?:['"][^'"]{4,}['"]|\S{8,})|(?:(?:this\s+is\s+)?(?:my\s+)?(?:api|secret|access|auth|bearer)[\s_-]*(?:key|token|code))\s*[:=]\s*['"]?[a-zA-Z0-9_-]{8,}['"]?)\b/gi,
+    validate: (matchStr) => validateApiKeyMatch(matchStr),
     severity: 'critical'
   },
   {
@@ -45,10 +73,10 @@ const REGEX_CONFIG = [
   },
   {
     category: 'pin_passcode',
-    label: 'ATM PIN / Secret Passcode',
-    // Matches explicit mentions of PIN / Passcode followed by 4 to 8 digits
-    pattern: /\b(?:pin|passcode|p\.i\.n\.|atm\s*pin|secret\s*code)\s*(?:is|:|=)?\s*(\d{4,8})\b/gi,
-    severity: 'high'
+    label: 'ATM PIN / Password / Secret Passcode',
+    // Matches explicit mentions of PIN, Password, or Passcode with optional device/system descriptors
+    pattern: /\b(?:(?:this\s+is\s+)?(?:my\s+)?(?:laptop|wifi|phone|atm|system|vault|user|account|device|admin)?\s*(?:pin|passcode|password|p\.i\.n\.|secret\s*code))\s*[:=is\s]+\b(\d{4,8})\b|\b(?:pin|passcode|password)\s*[:=]\s*['"]?([a-zA-Z0-9!@#$%^&*_-]{4,32})['"]?\b/gi,
+    severity: 'critical'
   }
 ];
 

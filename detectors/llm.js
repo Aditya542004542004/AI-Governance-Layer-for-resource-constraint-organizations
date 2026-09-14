@@ -193,8 +193,18 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
 }
 
 /**
+ * Helper to wrap session.prompt with a strict timeout (default 3000ms).
+ */
+function promptWithTimeout(session, promptText, timeoutMs = 3000) {
+  return Promise.race([
+    session.prompt(promptText),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`LLM prompt execution timed out (${timeoutMs}ms)`)), timeoutMs))
+  ]);
+}
+
+/**
  * Creates ONE LanguageModel session and reuses it across multiple document chunks.
- * Integrates Heuristic Gatekeeper triage to bypass benign chunks, single-session reuse,
+ * Integrates Heuristic Gatekeeper triage, 3-second per-chunk timeout, 2-chunk cap,
  * and early exit on high-confidence detection.
  * @param {Array<{chunkIndex: number, text: string}>} chunks 
  * @returns {Promise<Array<Object>>}
@@ -253,6 +263,9 @@ async function runMultiChunkLLMCheck(chunks = []) {
     return results;
   }
 
+  // Performance cap: Evaluate at most 2 candidate chunks via LLM to prevent long stalls
+  const chunksToProcess = candidateChunks.slice(0, 2);
+
   const sessionStart = performance.now();
   let session = null;
 
@@ -278,37 +291,51 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
     const sessionTimeMs = Math.round(performance.now() - sessionStart);
-    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${candidateChunks.length} triaged chunks out of ${chunks.length} total)`);
+    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${chunksToProcess.length} candidate chunks out of ${chunks.length} total)`);
 
     if (!session) {
       throw new Error('Failed to instantiate LanguageModel session');
     }
 
-    for (let i = 0; i < candidateChunks.length; i++) {
-      const chunk = candidateChunks[i];
+    for (let i = 0; i < chunksToProcess.length; i++) {
+      const chunk = chunksToProcess[i];
       const chunkStart = performance.now();
 
-      const responseText = await session.prompt(`Analyze prompt: "${chunk.text}"`);
-      const chunkInferenceMs = Math.round(performance.now() - chunkStart);
+      let responseText = null;
+      try {
+        responseText = await promptWithTimeout(session, `Analyze prompt: "${chunk.text}"`, 3000);
+      } catch (timeoutErr) {
+        console.warn(`[AI Governance Perf] Chunk ${i + 1}/${chunksToProcess.length} timed out after 3000ms. Skipping remaining LLM inference.`);
+        results.push({
+          chunkIndex: chunk.chunkIndex,
+          sensitive: false,
+          category: null,
+          confidence: 0,
+          skipped: true,
+          reason: 'LLM prompt inference timed out (3000ms limit)'
+        });
+        break; // Exit candidate loop on timeout
+      }
 
+      const chunkInferenceMs = Math.round(performance.now() - chunkStart);
       const parsedResult = extractAndParseJSON(responseText);
 
       const chunkResult = {
         chunkIndex: chunk.chunkIndex,
-        sensitive: Boolean(parsedResult.sensitive),
-        category: parsedResult.category || (parsedResult.sensitive ? 'confidential_context' : null),
-        confidence: typeof parsedResult.confidence === 'number' ? parsedResult.confidence : (parsedResult.sensitive ? 0.85 : 0.0),
+        sensitive: Boolean(parsedResult ? parsedResult.sensitive : false),
+        category: parsedResult ? (parsedResult.category || (parsedResult.sensitive ? 'confidential_context' : null)) : null,
+        confidence: parsedResult ? (typeof parsedResult.confidence === 'number' ? parsedResult.confidence : (parsedResult.sensitive ? 0.85 : 0.0)) : 0,
         skipped: false,
         latencyMs: chunkInferenceMs
       };
 
-      console.log(`[AI Governance Perf] Chunk ${i + 1}/${candidateChunks.length} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
+      console.log(`[AI Governance Perf] Chunk ${i + 1}/${chunksToProcess.length} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
 
       results.push(chunkResult);
 
       // EARLY EXIT Optimization: If candidate chunk returns sensitive with confidence >= 0.85, abort remaining chunk evaluations immediately!
       if (chunkResult.sensitive && chunkResult.confidence >= 0.85) {
-        console.log(`[AI Governance Perf] Early Exit triggered on chunk ${i + 1}/${candidateChunks.length} (Confidence: ${chunkResult.confidence}). Halting remaining chunk evaluations.`);
+        console.log(`[AI Governance Perf] Early Exit triggered on chunk ${i + 1}/${chunksToProcess.length} (Confidence: ${chunkResult.confidence}). Halting remaining chunk evaluations.`);
         break;
       }
     }

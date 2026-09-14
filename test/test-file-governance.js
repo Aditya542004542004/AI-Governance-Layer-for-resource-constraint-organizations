@@ -156,10 +156,35 @@ function testTextPreprocessAndEntropyTriage() {
   console.log('  ✓ Text Normalization, Shannon Entropy & Heuristic Gatekeeper tests passed.');
 }
 
+async function testEnvFileInspection() {
+  console.log('Testing .env File Inspection & Key-Value Secret Blocking...');
+
+  const envFileResult = await extractTextFromFile({
+    name: '.env',
+    buffer: Buffer.from('PORT=3000\nDATABASE_URL=postgres://admin:Password123@localhost:5432/production_db\nGEMINI_API_KEY=AIzaSyA1234567890abcdef1234567890abc\nJWT_SECRET=super_secret_jwt_key_990011\n', 'utf-8'),
+    type: 'application/octet-stream'
+  });
+
+  assert.strictEqual(envFileResult.unscannable, false, '.env file MUST be scannable text');
+  assert.strictEqual(envFileResult.text.includes('DATABASE_URL'), true, '.env content must be extracted');
+
+  const regexMatches = runRegexChecks(envFileResult.text);
+  assert.strictEqual(regexMatches.some(m => m.category === 'api_key'), true, 'Regex MUST detect .env credentials (DATABASE_URL / GEMINI_API_KEY / JWT_SECRET)');
+
+  const riskAnalysis = calculateRiskScore({ regexMatches, unscannable: false });
+  const policyResult = evaluatePolicy({ regexMatches, fileName: '.env', riskAnalysis });
+
+  assert.strictEqual(policyResult.action, 'block', '.env file containing secrets MUST be BLOCKED by Fixed Security Floor');
+  assert.strictEqual(policyResult.fixedFloorTriggered, true, 'Must trigger Fixed Security Floor violation');
+
+  console.log('  ✓ .env File Inspection & Key-Value Secret Blocking tests passed.');
+}
+
 async function runAllFileGovernanceTests() {
   console.log('\n--- Running File Upload Governance Unit Tests ---');
   await testFileTextExtraction();
   testTextPreprocessAndEntropyTriage();
+  await testEnvFileInspection();
   testSingleChunkSensitivityPreservation();
   testFailClosedPolicyForImages();
   console.log('--- All File Upload Governance Tests Passed Successfully! ---\n');

@@ -78,7 +78,7 @@ function hasSensitiveKeywords(text) {
  * @param {number} [threshold=4.2] Entropy cutoff threshold
  * @returns {boolean} True if high entropy token detected
  */
-function hasHighEntropyTokens(text, minLength = 16, threshold = 4.2) {
+function hasHighEntropyTokens(text, minLength = 24, threshold = 4.6) {
   if (!text || typeof text !== 'string') return false;
 
   // Split into alphanumeric/hyphen/underscore tokens

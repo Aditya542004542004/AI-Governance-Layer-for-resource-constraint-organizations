@@ -128,9 +128,11 @@ async function extractTextFromFile(fileInput) {
     const bytes = await fileToUint8Array(fileInput);
     let result = { fullText: '', pages: [], unscannable: false };
 
-    // 2. Plain Text Formats (.txt, .csv, .json, .md, .log, .xml)
-    const textExts = ['txt', 'csv', 'json', 'md', 'log', 'xml', 'js', 'html', 'py'];
-    if (textExts.includes(ext) || mimeType.startsWith('text/')) {
+    // 2. Plain Text & Config Formats (.txt, .env, .csv, .json, .md, .log, .xml, .yaml, .yml, .ini, .conf, .properties, .toml, .sh, .ts, .py, etc.)
+    const textExts = ['txt', 'env', 'csv', 'json', 'md', 'log', 'xml', 'js', 'html', 'py', 'yaml', 'yml', 'ini', 'conf', 'properties', 'toml', 'sh', 'bash', 'zsh', 'ps1', 'ts', 'tsx', 'jsx', 'sql', 'pem', 'key', 'cer', 'crt'];
+    const isEnvFile = fileName.startsWith('.env') || ext === 'env' || ext.startsWith('env') || fileName.endsWith('.env');
+
+    if (isEnvFile || textExts.includes(ext) || mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('javascript') || mimeType.includes('xml')) {
       const plainText = new TextDecoder('utf-8').decode(bytes);
       result = {
         fullText: plainText,
@@ -153,7 +155,8 @@ async function extractTextFromFile(fileInput) {
         result = extractDocxText(bytes);
       } else {
         result.unscannable = true;
-        result.reason = 'DOCX extraction module unavailable.';
+        result.fullText = '';
+        result.reason = 'DOCX extraction module unavailable (UNSCANNABLE_BINARY). Fail-Closed active.';
       }
     }
     // 5. Excel Spreadsheets (.xlsx, .xls)
@@ -162,13 +165,15 @@ async function extractTextFromFile(fileInput) {
         result = extractXlsxText(bytes);
       } else {
         result.unscannable = true;
-        result.reason = 'XLSX extraction module unavailable.';
+        result.fullText = '';
+        result.reason = 'XLSX extraction module unavailable (UNSCANNABLE_BINARY). Fail-Closed active.';
       }
     }
     // 6. Unknown / Unrecognized Format
     else {
       result.unscannable = true;
-      result.reason = `Unrecognized document extension '.${ext}'. Fail-Closed Security Policy active.`;
+      result.fullText = '';
+      result.reason = `Unrecognized document extension '.${ext}' (UNSCANNABLE_BINARY). Fail-Closed Security Policy active.`;
     }
 
     let text = result.fullText || '';

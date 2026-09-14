@@ -17,6 +17,7 @@
   window.__AI_GOVERNANCE_INJECTED__ = true;
 
   let isBypassingInterception = false;
+  let isScanningActive = false;
   let lastProcessedPrompt = '';
   let lastProcessedTime = 0;
 
@@ -82,7 +83,13 @@
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (element.isContentEditable) {
-      element.innerText = newValue;
+      element.focus();
+      try {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, newValue);
+      } catch (_) {
+        element.innerText = newValue;
+      }
       element.dispatchEvent(new Event('input', { bubbles: true }));
     }
   }
@@ -164,14 +171,16 @@
           llmResult: llmResult
         }
       });
-    } else if (message.type === 'ANALYZE_FILE') {
-      const { extractedData = {}, destinationDomain = 'unknown' } = message.payload;
-      const { fileName = 'file', text = '', unscannable = false, reason = '' } = extractedData;
+    } else if (message.type === 'ANALYZE_FILE' || message.type === 'ANALYZE_BATCH_FILES') {
+      const payload = message.payload || {};
+      const files = payload.files || [payload];
+      const firstData = (files[0] && files[0].extractedData) ? files[0].extractedData : (files[0] || {});
+      const { fileName = 'file', text = '', unscannable = false, reason = '' } = firstData;
 
       const regexMatches = typeof runRegexChecks === 'function' ? runRegexChecks(text) : [];
       
       const riskAnalysis = typeof calculateRiskScore === 'function' ? calculateRiskScore({
-        regexMatches, unscannable, destinationDomain
+        regexMatches, unscannable, destinationDomain: payload.destinationDomain || 'unknown'
       }) : { score: unscannable ? 85 : 0 };
 
       const policyResult = typeof evaluatePolicy === 'function' ? evaluatePolicy({
@@ -187,7 +196,8 @@
           riskScore: policyResult.riskScore,
           explanation: explanation,
           reasons: policyResult.reasons || [],
-          fileName: fileName
+          fileName: fileName,
+          fileResults: [{ action: policyResult.action, riskScore: policyResult.riskScore, fileName }]
         }
       });
     }
@@ -202,26 +212,35 @@
     document.addEventListener('change', handleFileInputChange, true);
     document.addEventListener('dragover', handleDragOver, true);
     document.addEventListener('drop', handleFileDrop, true);
+    document.addEventListener('paste', handleFilePaste, true);
   }
 
   function handleKeyDown(event) {
-    if (event.key === 'Enter' && !event.shiftKey && !isBypassingInterception) {
-      const inputEl = findPromptInput();
-      if (inputEl && (event.target === inputEl || inputEl.contains(event.target))) {
-        const text = getInputValue(inputEl);
-        if (text.trim().length > 0) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          processPromptSubmission(text, inputEl);
+    if (event.key === 'Enter' && !event.shiftKey) {
+      if (isScanningActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        showStatusChip('Please wait: File security inspection in progress...');
+        return;
+      }
+
+      if (!isBypassingInterception) {
+        const inputEl = findPromptInput();
+        if (inputEl && (event.target === inputEl || inputEl.contains(event.target))) {
+          const text = getInputValue(inputEl);
+          if (text.trim().length > 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            processPromptSubmission(text, inputEl);
+          }
         }
       }
     }
   }
 
   function handleClick(event) {
-    if (isBypassingInterception) return;
-
     const target = event.target;
     const button = target.closest('button, [role="button"]');
     if (!button) return;
@@ -235,14 +254,24 @@
                          ariaLabel.includes('submit');
 
     if (isSendButton) {
-      const inputEl = findPromptInput();
-      if (inputEl) {
-        const text = getInputValue(inputEl);
-        if (text.trim().length > 0) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          processPromptSubmission(text, inputEl);
+      if (isScanningActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        showStatusChip('Please wait: File security inspection in progress...');
+        return;
+      }
+
+      if (!isBypassingInterception) {
+        const inputEl = findPromptInput();
+        if (inputEl) {
+          const text = getInputValue(inputEl);
+          if (text.trim().length > 0) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            processPromptSubmission(text, inputEl);
+          }
         }
       }
     }
@@ -286,12 +315,67 @@
     }
   }
 
+  function handleFilePaste(event) {
+    if (isBypassingInterception) return;
+
+    if (event.clipboardData && event.clipboardData.files && event.clipboardData.files.length > 0) {
+      const files = Array.from(event.clipboardData.files);
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      processFileGovernance(files, event.target);
+    }
+  }
+
+  /**
+   * Inline Status Chip UI helpers for multi-file progressive status feedback.
+   */
+  function showStatusChip(text) {
+    removeStatusChip();
+    try {
+      const chip = document.createElement('div');
+      chip.id = 'ai-gov-status-chip-root';
+      chip.className = 'ai-gov-status-chip';
+      chip.innerHTML = `<div class="ai-gov-chip-spinner"></div><span>${escapeHtml(text)}</span>`;
+      if (document.body) {
+        document.body.appendChild(chip);
+      }
+    } catch (_) {}
+  }
+
+  function removeStatusChip() {
+    try {
+      const existing = document.getElementById('ai-gov-status-chip-root');
+      if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+      }
+    } catch (_) {}
+  }
+
   /**
    * Processes file attachments through on-device text extraction & governance evaluation.
    * Supports multi-file parallel ingestion and progressive status feedback.
    */
   async function processFileGovernance(files, targetElement) {
     if (!files || files.length === 0) return;
+
+    isScanningActive = true;
+    const sendBtn = findSendButton();
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.setAttribute('data-ai-gov-disabled', 'true');
+    }
+
+    const unlockScanningState = () => {
+      isScanningActive = false;
+      removeStatusChip();
+      removeFileCheckingOverlay();
+      if (sendBtn && sendBtn.getAttribute('data-ai-gov-disabled')) {
+        sendBtn.disabled = false;
+        sendBtn.removeAttribute('data-ai-gov-disabled');
+      }
+    };
 
     const extractedFilesData = [];
 
@@ -326,8 +410,7 @@
         }
       },
       (response) => {
-        removeStatusChip();
-        removeFileCheckingOverlay();
+        unlockScanningState();
 
         if (!response || !response.success) {
           console.error('[AI Governance] Error analyzing batch files:', response?.error);
@@ -372,13 +455,21 @@
   function dispatchOriginalFileAttach(files, targetElement) {
     isBypassingInterception = true;
 
-    if (targetElement && targetElement.tagName === 'INPUT' && targetElement.type === 'file') {
-      targetElement.dispatchEvent(new Event('change', { bubbles: true }));
+    try {
+      if (targetElement && typeof targetElement.dispatchEvent === 'function') {
+        if (targetElement.tagName === 'INPUT' && targetElement.type === 'file') {
+          targetElement.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (document.contains(targetElement)) {
+          targetElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        }
+      }
+    } catch (err) {
+      console.warn('[AI Governance] Non-critical warning during file attach re-dispatch:', err);
     }
 
     setTimeout(() => {
       isBypassingInterception = false;
-    }, 1000);
+    }, 1200);
   }
 
   /**
