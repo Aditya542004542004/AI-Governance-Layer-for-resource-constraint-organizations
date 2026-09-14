@@ -117,6 +117,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
+
+  if (message.type === 'CLEAR_HASH_CACHE' || message.type === 'CLEAR_FILE_HASH_CACHE') {
+    if (typeof clearFileHashCache === 'function') {
+      clearFileHashCache()
+        .then(() => sendResponse({ success: true }))
+        .catch(err => sendResponse({ success: false, error: err.message }));
+    } else {
+      sendResponse({ success: true });
+    }
+    return true;
+  }
 });
 
 /**

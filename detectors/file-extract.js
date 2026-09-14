@@ -14,9 +14,13 @@ if (typeof require !== 'undefined') {
     const pdfLib = require('../lib/pdf-extract.js');
     const docxLib = require('../lib/docx-extract.js');
     const xlsxLib = require('../lib/xlsx-extract.js');
+    const preprocess = require('../engine/preprocess.js');
     globalThis.extractPdfText = pdfLib.extractPdfText;
     globalThis.extractDocxText = docxLib.extractDocxText;
     globalThis.extractXlsxText = xlsxLib.extractXlsxText;
+    if (preprocess.buildLAAWWindows) {
+      globalThis.buildLAAWWindows = preprocess.buildLAAWWindows;
+    }
   } catch (e) {
     // Ignore require warnings in browser
   }
@@ -189,7 +193,13 @@ async function extractTextFromFile(fileInput) {
       text = normalizeFn(text);
     }
 
-    const chunks = chunkText(text, 8000, 600);
+    const laawFn = typeof buildLAAWWindows === 'function' 
+      ? buildLAAWWindows 
+      : (typeof globalThis !== 'undefined' && globalThis.buildLAAWWindows) 
+        ? globalThis.buildLAAWWindows 
+        : null;
+
+    const chunks = laawFn ? laawFn(text, 1500, 400) : chunkText(text, 8000, 600);
 
     return {
       fileName,
@@ -217,15 +227,19 @@ async function extractTextFromFile(fileInput) {
   }
 }
 
+const laawExport = typeof buildLAAWWindows !== 'undefined' ? buildLAAWWindows : (typeof globalThis !== 'undefined' ? globalThis.buildLAAWWindows : null);
+
 // Universal Export Wrapper for Node.js, Web Worker, and Browser Contexts
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { extractTextFromFile, chunkText };
+  module.exports = { extractTextFromFile, chunkText, buildLAAWWindows: laawExport };
 }
 if (typeof globalThis !== 'undefined') {
   globalThis.extractTextFromFile = extractTextFromFile;
   globalThis.chunkText = chunkText;
+  globalThis.buildLAAWWindows = laawExport;
 }
 if (typeof self !== 'undefined') {
   self.extractTextFromFile = extractTextFromFile;
   self.chunkText = chunkText;
+  self.buildLAAWWindows = laawExport;
 }

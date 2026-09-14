@@ -236,6 +236,28 @@ async function clearAuditRecords() {
   }
 }
 
+/**
+ * Clears all cached file SHA-256 hash entries without deleting audit logs.
+ * @returns {Promise<boolean>}
+ */
+async function clearFileHashCache() {
+  try {
+    const db = await initAuditDB();
+    if (!db.objectStoreNames.contains(CACHE_STORE_NAME)) return true;
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([CACHE_STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(CACHE_STORE_NAME);
+      const request = store.clear();
+
+      request.onsuccess = () => resolve(true);
+      request.onerror = (err) => reject(err);
+    });
+  } catch (err) {
+    console.error('[AI Governance] clearFileHashCache exception:', err);
+    return false;
+  }
+}
+
 // Support both ES Modules and script environment exports
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -244,7 +266,8 @@ if (typeof module !== 'undefined' && module.exports) {
     getAuditRecords,
     clearAuditRecords,
     getFileHashCache,
-    saveFileHashCache
+    saveFileHashCache,
+    clearFileHashCache
   };
 }
 if (typeof globalThis !== 'undefined') {
@@ -254,6 +277,7 @@ if (typeof globalThis !== 'undefined') {
   globalThis.clearAuditRecords = clearAuditRecords;
   globalThis.getFileHashCache = getFileHashCache;
   globalThis.saveFileHashCache = saveFileHashCache;
+  globalThis.clearFileHashCache = clearFileHashCache;
 }
 if (typeof self !== 'undefined') {
   self.initAuditDB = initAuditDB;
@@ -262,4 +286,5 @@ if (typeof self !== 'undefined') {
   self.clearAuditRecords = clearAuditRecords;
   self.getFileHashCache = getFileHashCache;
   self.saveFileHashCache = saveFileHashCache;
+  self.clearFileHashCache = clearFileHashCache;
 }

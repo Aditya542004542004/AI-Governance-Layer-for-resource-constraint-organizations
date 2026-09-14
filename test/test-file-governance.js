@@ -12,6 +12,7 @@ const { extractTextFromFile, chunkText } = require('../detectors/file-extract.js
 const { runRegexChecks } = require('../detectors/regex.js');
 const { calculateRiskScore } = require('../engine/risk-score.js');
 const { evaluatePolicy } = require('../engine/policy.js');
+const { buildLAAWWindows } = require('../engine/preprocess.js');
 
 async function testFileTextExtraction() {
   console.log('Testing File Text Extraction across formats...');
@@ -156,6 +157,34 @@ function testTextPreprocessAndEntropyTriage() {
   console.log('  ✓ Text Normalization, Shannon Entropy & Heuristic Gatekeeper tests passed.');
 }
 
+function testHeuristicPrioritySampling() {
+  console.log('Testing Heuristic Priority Sampling (Top-K)...');
+
+  const chunks = [
+    { chunkIndex: 0, text: 'This is a benign chunk explaining general photosynthesis in plants.' },
+    { chunkIndex: 1, text: 'This chunk contains high entropy string 9A8f17k3LmZpQx9vW2tR0sY9900223344 for verification.' },
+    { chunkIndex: 2, text: 'This chunk has explicit secret password token salary diagnosis confidential keyword anchors.' },
+    { chunkIndex: 3, text: 'Another clean overview chunk with standard documentation text.' }
+  ];
+
+  const topPriority = selectPriorityChunks(chunks, 2);
+
+  assert.strictEqual(topPriority.length, 2, 'Should select top 2 priority chunks');
+  assert.strictEqual(topPriority[0].chunkIndex, 2, 'Highest priority chunk (+5 score keyword anchor) should be first');
+  assert.strictEqual(topPriority[1].chunkIndex, 1, 'Second priority chunk (+3 score entropy token) should be second');
+
+  // Verify clean chunks (score == 0) are excluded
+  const cleanChunksOnly = [
+    { chunkIndex: 0, text: 'Just a normal sentence.' },
+    { chunkIndex: 1, text: 'Another ordinary paragraph.' }
+  ];
+
+  const cleanPriority = selectPriorityChunks(cleanChunksOnly, 2);
+  assert.strictEqual(cleanPriority.length, 0, 'Clean chunks with score 0 MUST be completely excluded (0 candidates)');
+
+  console.log('  ✓ Heuristic Priority Sampling (Top-K) tests passed.');
+}
+
 async function testEnvFileInspection() {
   console.log('Testing .env File Inspection & Key-Value Secret Blocking...');
 
@@ -180,10 +209,38 @@ async function testEnvFileInspection() {
   console.log('  ✓ .env File Inspection & Key-Value Secret Blocking tests passed.');
 }
 
+function testHybridLAAWWindowing() {
+  console.log('Testing Hybrid Locality-Aware Anchor Windowing (H-LAAW)...');
+
+  // Test 1: Short text (<= 2500 chars) -> 100% full-text evaluation, 1 window
+  const shortText = 'This is a short chat prompt explaining photosynthesis in under 500 characters.';
+  const shortWindows = buildLAAWWindows(shortText, 1500, 400);
+
+  assert.strictEqual(shortWindows.length, 1, 'Short text MUST produce 1 window');
+  assert.strictEqual(shortWindows[0].isFullText, true, 'Short text window MUST be marked full-text evaluation');
+  assert.strictEqual(shortWindows[0].windowType, 'FULL', 'Short text windowType MUST be FULL');
+
+  // Test 2: Large document (> 2500 chars) with anchor at position 5000
+  const padding = 'A'.repeat(5000);
+  const largeText = `DOCUMENT HEAD TITLE\n${padding}\nCONFIDENTIAL MERGER ACQUISITION EBITDA REVENUE DETAILS AT POSITION 5000\n${padding}`;
+  const largeWindows = buildLAAWWindows(largeText, 1500, 400);
+
+  assert.strictEqual(largeWindows.length, 2, 'Large document MUST produce at most 2 LAAW windows');
+  assert.strictEqual(largeWindows[0].windowType, 'HEAD', 'Window 1 MUST be document HEAD');
+  assert.strictEqual(largeWindows[0].text.length, 1500, 'HEAD window MUST be capped at 1500 chars');
+
+  assert.strictEqual(largeWindows[1].windowType, 'ANCHOR_LOCUS', 'Window 2 MUST be ANCHOR_LOCUS');
+  assert.strictEqual(largeWindows[1].text.includes('CONFIDENTIAL MERGER ACQUISITION'), true, 'Snippet 2 MUST capture deep anchor locus');
+
+  console.log('  ✓ Hybrid Locality-Aware Anchor Windowing (H-LAAW) tests passed.');
+}
+
 async function runAllFileGovernanceTests() {
   console.log('\n--- Running File Upload Governance Unit Tests ---');
   await testFileTextExtraction();
   testTextPreprocessAndEntropyTriage();
+  testHeuristicPrioritySampling();
+  testHybridLAAWWindowing();
   await testEnvFileInspection();
   testSingleChunkSensitivityPreservation();
   testFailClosedPolicyForImages();

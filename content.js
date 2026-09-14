@@ -37,7 +37,10 @@
     }
 
     if (hostname.includes('gemini.google.com')) {
-      return document.querySelector('div[contenteditable="true"]') ||
+      return document.querySelector('rich-textarea div[contenteditable="true"]') ||
+             document.querySelector('div.ql-editor[contenteditable="true"]') ||
+             document.querySelector('rich-textarea p') ||
+             document.querySelector('div[contenteditable="true"]') ||
              document.querySelector('.input-area textarea') ||
              document.querySelector('textarea');
     }
@@ -59,7 +62,11 @@
     }
     if (hostname.includes('gemini.google.com')) {
       return document.querySelector('button.send-button') ||
-             document.querySelector('button[aria-label*="Send"]');
+             document.querySelector('button[aria-label*="Send"]') ||
+             document.querySelector('button[aria-label*="Submit"]') ||
+             document.querySelector('.send-button-container button') ||
+             document.querySelector('rich-textarea ~ button') ||
+             document.querySelector('button.send-button-container');
     }
     if (hostname.includes('claude.ai')) {
       return document.querySelector('button[aria-label*="Send"]') ||

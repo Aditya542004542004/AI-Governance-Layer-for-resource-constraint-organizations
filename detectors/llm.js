@@ -132,15 +132,31 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
         },
         { 
           role: 'assistant', 
-          content: '{"sensitive": false, "category": null, "confidence": 0.0}' 
+          content: '{"sensitive": false, "category": null, "confidence": 0.0, "explanation": "General educational query."}' 
         },
         { 
           role: 'user', 
-          content: 'Analyze prompt: "this is API Key - 62755573sffsjd"' 
+          content: 'Analyze prompt: "The RESTful API uses AES-256 key management. According to research on one-time PIN generation in 2022..."' 
         },
         { 
           role: 'assistant', 
-          content: '{"sensitive": true, "category": "proprietary", "confidence": 0.95}' 
+          content: '{"sensitive": false, "category": null, "confidence": 0.0, "explanation": "Academic and educational security literature."}' 
+        },
+        { 
+          role: 'user', 
+          content: 'Analyze prompt: "this is my api key udhuhsu8238wqewJKWDDW"' 
+        },
+        { 
+          role: 'assistant', 
+          content: '{"sensitive": true, "category": "api_key", "confidence": 0.95, "explanation": "Conversational API key credential disclosure."}' 
+        },
+        { 
+          role: 'user', 
+          content: 'Analyze prompt: "use this passcode to enter the server room 84920"' 
+        },
+        { 
+          role: 'assistant', 
+          content: '{"sensitive": true, "category": "proprietary", "confidence": 0.90, "explanation": "Physical access security passcode disclosure."}' 
         }
       ]
     };
@@ -156,7 +172,7 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
     const userPrompt = `Analyze prompt: "${text}"`;
-    const responseText = await session.prompt(userPrompt);
+    const responseText = await promptWithTimeout(session, userPrompt, 3500);
     const latencyMs = performance.now() - startTime;
 
     // Parse with resilient extractor
@@ -177,7 +193,8 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
       category: null,
       confidence: 0,
       skipped: true,
-      reason: err.message || 'LLM execution exception',
+      timedOut: err.message === 'LLM_TIMEOUT',
+      reason: err.message === 'LLM_TIMEOUT' ? 'LLM_TIMEOUT' : (err.message || 'LLM execution exception'),
       latencyMs: Math.round(performance.now() - startTime)
     };
   } finally {
@@ -193,18 +210,18 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
 }
 
 /**
- * Helper to wrap session.prompt with a strict timeout (default 3000ms).
+ * Helper to wrap session.prompt with a strict timeout (default 3500ms).
  */
-function promptWithTimeout(session, promptText, timeoutMs = 3000) {
+function promptWithTimeout(session, promptText, timeoutMs = 3500) {
   return Promise.race([
     session.prompt(promptText),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`LLM prompt execution timed out (${timeoutMs}ms)`)), timeoutMs))
+    new Promise((_, reject) => setTimeout(() => reject(new Error('LLM_TIMEOUT')), timeoutMs))
   ]);
 }
 
 /**
  * Creates ONE LanguageModel session and reuses it across multiple document chunks.
- * Integrates Heuristic Gatekeeper triage, 3-second per-chunk timeout, 2-chunk cap,
+ * Integrates Heuristic Priority Sampling (Top-K), 3.5-second per-chunk timeout,
  * and early exit on high-confidence detection.
  * @param {Array<{chunkIndex: number, text: string}>} chunks 
  * @returns {Promise<Array<Object>>}
@@ -215,35 +232,39 @@ async function runMultiChunkLLMCheck(chunks = []) {
   }
 
   const results = [];
-  const candidateChunks = [];
 
-  // 1. Phase 1 Heuristic Gatekeeper Triage (Shannon Entropy & Keyword Anchors)
-  const triageCheckFn = typeof isChunkTriagedForLLM === 'function' 
-    ? isChunkTriagedForLLM 
-    : (typeof globalThis !== 'undefined' && globalThis.isChunkTriagedForLLM) 
-      ? globalThis.isChunkTriagedForLLM 
+  // Phase 1: Heuristic Priority Sampling (Top-K Chunk Selection)
+  const selectPriorityFn = typeof selectPriorityChunks === 'function' 
+    ? selectPriorityChunks 
+    : (typeof globalThis !== 'undefined' && globalThis.selectPriorityChunks) 
+      ? globalThis.selectPriorityChunks 
       : null;
 
-  for (const chunk of chunks) {
-    const isTriaged = triageCheckFn ? triageCheckFn(chunk.text) : true;
-    if (!isTriaged) {
-      // Chunk is clean: bypass LLM inference completely
+  const candidateChunks = selectPriorityFn ? selectPriorityFn(chunks, 2) : [];
+
+  // Identify which chunk indices were skipped due to clean heuristic score (score == 0)
+  const candidateIndices = new Set(candidateChunks.map(c => c.chunkIndex));
+
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const originalChunkIndex = typeof chunks[idx] === 'object' && chunks[idx] && typeof chunks[idx].chunkIndex === 'number'
+      ? chunks[idx].chunkIndex
+      : idx;
+
+    if (!candidateIndices.has(originalChunkIndex)) {
       results.push({
-        chunkIndex: chunk.chunkIndex,
+        chunkIndex: originalChunkIndex,
         sensitive: false,
         category: null,
         confidence: 0,
         skipped: true,
-        reason: 'Passed heuristic gatekeeper (clean)'
+        reason: 'HEURISTIC_TRIAGE_CLEAN'
       });
-    } else {
-      candidateChunks.push(chunk);
     }
   }
 
-  // If no chunks require LLM inference, return early
+  // If no candidate chunks exceed suspicion threshold, return early
   if (candidateChunks.length === 0) {
-    console.log(`[AI Governance Perf] Heuristic Gatekeeper cleared all ${chunks.length} chunks. Bypassing Prompt API LLM completely.`);
+    console.log(`[AI Governance Perf] Heuristic Priority Sampling cleared all ${chunks.length} chunks. Bypassing Prompt API LLM completely.`);
     return results;
   }
 
@@ -251,20 +272,19 @@ async function runMultiChunkLLMCheck(chunks = []) {
   if (availability === 'no' || availability === 'unavailable') {
     console.warn(`[AI Governance Perf] Prompt API unavailable (${availability}). Multi-chunk check skipped for candidate chunks.`);
     candidateChunks.forEach(c => {
-      results.push({
-        chunkIndex: c.chunkIndex,
-        sensitive: false,
-        category: null,
-        confidence: 0,
-        skipped: true,
-        reason: `Prompt API unavailable (${availability})`
-      });
+      if (!results.some(r => r.chunkIndex === c.chunkIndex)) {
+        results.push({
+          chunkIndex: c.chunkIndex,
+          sensitive: false,
+          category: null,
+          confidence: 0,
+          skipped: true,
+          reason: `Prompt API unavailable (${availability})`
+        });
+      }
     });
     return results;
   }
-
-  // Performance cap: Evaluate at most 2 candidate chunks via LLM to prevent long stalls
-  const chunksToProcess = candidateChunks.slice(0, 2);
 
   const sessionStart = performance.now();
   let session = null;
@@ -278,9 +298,13 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
       systemPrompt: systemPrompt,
       initialPrompts: [
         { role: 'user', content: 'Analyze prompt: "Hi, can you explain what photosyntheses is?"' },
-        { role: 'assistant', content: '{"sensitive": false, "category": null, "confidence": 0.0}' },
-        { role: 'user', content: 'Analyze prompt: "this is API Key - 62755573sffsjd"' },
-        { role: 'assistant', content: '{"sensitive": true, "category": "proprietary", "confidence": 0.95}' }
+        { role: 'assistant', content: '{"sensitive": false, "category": null, "confidence": 0.0, "explanation": "General educational query."}' },
+        { role: 'user', content: 'Analyze prompt: "The RESTful API uses AES-256 key management. According to research on one-time PIN generation in 2022..."' },
+        { role: 'assistant', content: '{"sensitive": false, "category": null, "confidence": 0.0, "explanation": "Academic and educational security literature."}' },
+        { role: 'user', content: 'Analyze prompt: "this is my api key udhuhsu8238wqewJKWDDW"' },
+        { role: 'assistant', content: '{"sensitive": true, "category": "api_key", "confidence": 0.95, "explanation": "Conversational API key credential disclosure."}' },
+        { role: 'user', content: 'Analyze prompt: "use this passcode to enter the server room 84920"' },
+        { role: 'assistant', content: '{"sensitive": true, "category": "proprietary", "confidence": 0.90, "explanation": "Physical access security passcode disclosure."}' }
       ]
     };
 
@@ -291,28 +315,29 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
     const sessionTimeMs = Math.round(performance.now() - sessionStart);
-    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${chunksToProcess.length} candidate chunks out of ${chunks.length} total)`);
+    console.log(`[AI Governance Perf] LanguageModel Session Creation: ${sessionTimeMs} ms (Session reused across ${candidateChunks.length} candidate chunks out of ${chunks.length} total)`);
 
     if (!session) {
       throw new Error('Failed to instantiate LanguageModel session');
     }
 
-    for (let i = 0; i < chunksToProcess.length; i++) {
-      const chunk = chunksToProcess[i];
+    for (let i = 0; i < candidateChunks.length; i++) {
+      const chunk = candidateChunks[i];
       const chunkStart = performance.now();
 
       let responseText = null;
       try {
-        responseText = await promptWithTimeout(session, `Analyze prompt: "${chunk.text}"`, 3000);
+        responseText = await promptWithTimeout(session, `Analyze prompt: "${chunk.text}"`, 3500);
       } catch (timeoutErr) {
-        console.warn(`[AI Governance Perf] Chunk ${i + 1}/${chunksToProcess.length} timed out after 3000ms. Skipping remaining LLM inference.`);
+        console.warn(`[AI Governance Perf] Priority Chunk ${chunk.chunkIndex} timed out (3500ms limit). Flagging LLM_TIMEOUT.`);
         results.push({
           chunkIndex: chunk.chunkIndex,
           sensitive: false,
           category: null,
           confidence: 0,
           skipped: true,
-          reason: 'LLM prompt inference timed out (3000ms limit)'
+          timedOut: true,
+          reason: 'LLM_TIMEOUT'
         });
         break; // Exit candidate loop on timeout
       }
@@ -329,20 +354,19 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
         latencyMs: chunkInferenceMs
       };
 
-      console.log(`[AI Governance Perf] Chunk ${i + 1}/${chunksToProcess.length} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
+      console.log(`[AI Governance Perf] Priority Chunk ${chunk.chunkIndex} Inference: ${chunkInferenceMs} ms | Sensitive: ${chunkResult.sensitive} | Confidence: ${chunkResult.confidence}`);
 
       results.push(chunkResult);
 
       // EARLY EXIT Optimization: If candidate chunk returns sensitive with confidence >= 0.85, abort remaining chunk evaluations immediately!
       if (chunkResult.sensitive && chunkResult.confidence >= 0.85) {
-        console.log(`[AI Governance Perf] Early Exit triggered on chunk ${i + 1}/${chunksToProcess.length} (Confidence: ${chunkResult.confidence}). Halting remaining chunk evaluations.`);
+        console.log(`[AI Governance Perf] Early Exit triggered on Priority Chunk ${chunk.chunkIndex} (Confidence: ${chunkResult.confidence}). Halting remaining chunk evaluations.`);
         break;
       }
     }
 
   } catch (err) {
     console.error('[AI Governance Perf] Error in runMultiChunkLLMCheck (graceful fallback active):', err);
-    // Graceful fallback for remaining candidate chunks
     candidateChunks.forEach(c => {
       if (!results.some(r => r.chunkIndex === c.chunkIndex)) {
         results.push({
@@ -351,7 +375,8 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
           category: null,
           confidence: 0,
           skipped: true,
-          reason: err.message || 'LLM execution exception'
+          timedOut: err.message === 'LLM_TIMEOUT',
+          reason: err.message === 'LLM_TIMEOUT' ? 'LLM_TIMEOUT' : (err.message || 'LLM execution exception')
         });
       }
     });

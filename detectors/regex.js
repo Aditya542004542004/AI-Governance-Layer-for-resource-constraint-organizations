@@ -52,9 +52,16 @@ const REGEX_CONFIG = [
   {
     category: 'api_key',
     label: 'API Secret / Key',
-    // High-precision provider keys (sk-..., AKIA..., AIza..., ghp_..., xox...) & explicit secret key-value assignments
-    pattern: /\b(?:sk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z-_]{35}|gh[pousr]_[A-Za-z0-9_]{36,}|xox[baprs]-[a-zA-Z0-9]{10,}|[a-zA-Z0-9_-]{32,}|(?:[A-Za-z0-9_]*(?:SECRET|KEY|PASSWORD|TOKEN|AUTH|PASS|CREDENTIAL|PRIVATE|DATABASE_URL|DB_URL)[A-Za-z0-9_]*)\s*[:=]\s*(?:['"][^'"]{4,}['"]|\S{8,})|(?:(?:this\s+is\s+)?(?:my\s+)?(?:api|secret|access|auth|bearer)[\s_-]*(?:key|token|code))\s*[:=]\s*['"]?[a-zA-Z0-9_-]{8,}['"]?)\b/gi,
+    // Known Vendor API tokens with strict prefixes (sk-..., AKIA..., AIza..., ghp_..., xox..., ya29..., AQ...) & strict assignment operators with optional quotes for secret keys
+    pattern: /\b(?:sk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z-_]{20,}|gh[pousr]_[A-Za-z0-9_]{36,}|xox[baprs]-[a-zA-Z0-9]{10,}|ya29\.[a-zA-Z0-9_-]{50,}|AQ[a-zA-Z0-9_-]{40,})\b|(?:[A-Za-z0-9_]*(?:SECRET|KEY|PASSWORD|TOKEN|AUTH|PASS|CREDENTIAL|PRIVATE|DATABASE_URL|DB_URL)[A-Za-z0-9_]*)\s*[:=]\s*['"]?[a-zA-Z0-9_.:/@\-]{8,}['"]?/gi,
     validate: (matchStr) => validateApiKeyMatch(matchStr),
+    severity: 'critical'
+  },
+  {
+    category: 'database_url',
+    label: 'Database Connection String',
+    // Matches Database URIs: mysql://, postgres://, mongodb://, redis://, etc.
+    pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|mssql|oracle|sqlite):\/\/[^\s'"]{8,}\b/gi,
     severity: 'critical'
   },
   {
@@ -74,9 +81,34 @@ const REGEX_CONFIG = [
   {
     category: 'pin_passcode',
     label: 'ATM PIN / Password / Secret Passcode',
-    // Matches explicit mentions of PIN, Password, or Passcode with optional device/system descriptors
-    pattern: /\b(?:(?:this\s+is\s+)?(?:my\s+)?(?:laptop|wifi|phone|atm|system|vault|user|account|device|admin)?\s*(?:pin|passcode|password|p\.i\.n\.|secret\s*code))\s*[:=is\s]+\b(\d{4,8})\b|\b(?:pin|passcode|password)\s*[:=]\s*['"]?([a-zA-Z0-9!@#$%^&*_-]{4,32})['"]?\b/gi,
+    // Requires explicit assignment syntax or strict pin assignment keywords
+    pattern: /\b(?:atm\s*pin|my\s*pin|pin\s*code|passcode)\s*[:=is\s]+\b(\d{4,8})\b|\b(?:pin|passcode|password)\s*[:=]\s*['"]?([a-zA-Z0-9!@#$%^&*_-]{4,32})['"]?\b/gi,
     severity: 'critical'
+  },
+  {
+    category: 'potential_credential',
+    label: 'Unverified Credential Pattern',
+    // Matches "api key", "token", "secret", "password" followed by non-delimited strings (8+ chars)
+    pattern: /\b(?:(?:this\s+is\s+)?(?:my\s+)?(?:api|secret|access|auth)[\s_-]*(?:key|token|code)|password|passcode)\s*[:=is\s]+([a-zA-Z0-9_\-]{8,})\b/gi,
+    validate: (matchStr) => {
+      // Extract the trailing candidate token
+      const parts = matchStr.split(/[:=is\s]+/i).filter(Boolean);
+      if (parts.length === 0) return false;
+      const candidate = parts[parts.length - 1].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+
+      // 1. If the token is a standard English/technical dictionary word, DISCARD (False Positive on prose)
+      if (COMMON_ENGLISH_WORDS.has(candidate)) {
+        return false;
+      }
+
+      // 2. Discard purely numeric years or small integers (e.g. 2022, 2023)
+      if (/^\d{1,4}$/.test(candidate)) {
+        return false;
+      }
+
+      return true;
+    },
+    severity: 'low' // Explicitly LOW severity so it does NOT trigger Fixed Security Floor
   }
 ];
 

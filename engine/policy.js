@@ -123,6 +123,16 @@ function evaluatePolicy({
     });
   }
 
+  // Fixed Floor Rule E: Database Connection URIs are ALWAYS blocked
+  const dbUriHits = regexMatches.filter(m => m.category === 'database_url');
+  if (dbUriHits.length > 0) {
+    reasons.push({
+      type: 'fixed_floor_violation',
+      category: 'database_url',
+      description: 'Contains Database Connection String / URI credentials (Fixed Security Floor rule)'
+    });
+  }
+
   // Fixed Floor Rule C: Unscannable / Image / Binary File (Fail-Closed Security Floor)
   if (unscannable) {
     reasons.push({
@@ -188,12 +198,29 @@ function evaluatePolicy({
     });
   }
 
+  // Compile LLM timeout fail-safe reasons
+  const hasTimeout = Boolean(
+    riskAnalysis.timedOut || 
+    (llmResult && llmResult.timedOut) || 
+    (Array.isArray(chunkLLMResults) && chunkLLMResults.some(c => c.timedOut))
+  );
+
+  if (hasTimeout) {
+    reasons.push({
+      type: 'llm_timeout_failsafe',
+      category: 'timeout_failsafe',
+      description: 'LLM prompt execution timed out (3500ms limit); risk-weighted fail-safe policy applied'
+    });
+  }
+
   // Action decision logic
   let action = 'allow';
 
+  const hasBlockingRegexMatches = regexMatches.some(m => m.severity && m.severity !== 'low');
+
   if (riskScore >= policy.blockThreshold) {
     action = 'block';
-  } else if (riskScore >= policy.redactThreshold || regexMatches.length > 0) {
+  } else if (riskScore >= policy.redactThreshold || hasBlockingRegexMatches) {
     action = 'redact';
   }
 

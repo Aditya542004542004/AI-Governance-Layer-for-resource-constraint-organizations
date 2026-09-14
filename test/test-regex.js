@@ -6,6 +6,8 @@
 
 const assert = require('assert');
 const { runRegexChecks, luhnCheck } = require('../detectors/regex.js');
+const { calculateRiskScore } = require('../engine/risk-score.js');
+const { evaluatePolicy } = require('../engine/policy.js');
 
 function testLuhnAlgorithm() {
   console.log('Testing Luhn Algorithm verification...');
@@ -39,22 +41,54 @@ function testRegexCategories() {
   assert.strictEqual(emailResult.length, 1, 'Should detect email pattern');
   assert.strictEqual(emailResult[0].category, 'email');
 
-  // 3. API Keys
+  // 3. API Keys (Structured & Vendor Prefixes)
   const apiKeyResult1 = runRegexChecks('Use token sk-abc12345678901234567890123456789 for auth.');
   assert.strictEqual(apiKeyResult1.some(m => m.category === 'api_key'), true, 'Should detect sk- OpenAI API key');
 
   const apiKeyResult2 = runRegexChecks('AWS Access Key: AKIAIOSFODNN7EXAMPLE.');
   assert.strictEqual(apiKeyResult2.some(m => m.category === 'api_key'), true, 'Should detect AWS AKIA key');
 
+  const structuredKeyResult = runRegexChecks("api_key = 'sk-proj-123456789012345678901234'");
+  assert.strictEqual(structuredKeyResult.some(m => m.category === 'api_key'), true, 'Should detect structured api_key assignment');
+
   // 4. National Identity (SSN)
   const ssnResult = runRegexChecks('Employee SSN is 123-45-6789.');
   assert.strictEqual(ssnResult.some(m => m.category === 'national_id'), true, 'Should detect SSN pattern');
 
-  // 6. Passwords / Passcodes
-  const passwordResult = runRegexChecks('this is my laptop password 2901901');
-  assert.strictEqual(passwordResult.some(m => m.category === 'pin_passcode'), true, 'Should detect laptop password pattern');
+  // 5. Passwords / Passcodes (Explicit Assignment)
+  const passwordResult = runRegexChecks('my pin is 2901');
+  assert.strictEqual(passwordResult.some(m => m.category === 'pin_passcode'), true, 'Should detect explicit PIN assignment pattern');
 
   console.log('  ✓ Regex Category pattern tests passed.');
+}
+
+function testSoftHeuristicCredentialDetection() {
+  console.log('Testing Continuous Risk Scoring via Soft Heuristic Credential Detection...');
+
+  // 1. Conversational prompt with unverified token
+  const conversationalText = 'this is my api key duiwhdigdbqu8238bhd';
+  const matches = runRegexChecks(conversationalText);
+
+  assert.strictEqual(matches.some(m => m.category === 'potential_credential'), true, 'Conversational key leak must trigger potential_credential category');
+  assert.strictEqual(matches.some(m => m.category === 'api_key'), false, 'Conversational key leak MUST NOT trigger rigid api_key Fixed Floor rule');
+
+  const riskAnalysisTrusted = calculateRiskScore({ regexMatches: matches, destinationDomain: 'chatgpt.com' });
+  assert.strictEqual(riskAnalysisTrusted.score, 30, 'Soft heuristic credential detection on trusted domain must produce base score of 30');
+
+  const riskAnalysisUnknown = calculateRiskScore({ regexMatches: matches, destinationDomain: 'unknown' });
+  assert.strictEqual(riskAnalysisUnknown.score, 38, 'Soft heuristic credential detection on unknown domain produces 38 (30 * 1.25 multiplier)');
+  assert.strictEqual(riskAnalysisUnknown.score < 45, true, 'Score must remain strictly below redactThreshold of 45');
+
+  const policyResult = evaluatePolicy({ regexMatches: matches, riskAnalysis: riskAnalysisTrusted });
+  assert.strictEqual(policyResult.action, 'allow', 'Intermediate score MUST result in allow action (below 45 redact threshold)');
+  assert.strictEqual(policyResult.fixedFloorTriggered, false, 'Soft heuristic detection MUST NOT trigger Fixed Security Floor');
+
+  // 2. Academic paper snippet MUST NOT trigger potential_credential
+  const academicText = 'The RESTful API is implemented using Flask. Research on one-time PIN generation in 2022.';
+  const academicMatches = runRegexChecks(academicText);
+  assert.strictEqual(academicMatches.length, 0, 'Academic text with Flask and 2022 MUST produce 0 regex matches');
+
+  console.log('  ✓ Continuous Risk Scoring & Soft Heuristic Credential Detection tests passed.');
 }
 
 function testAcademicPaperFalsePositiveRegression() {
@@ -83,6 +117,7 @@ function runAllRegexTests() {
   console.log('\n--- Running Regex Detector Unit Tests ---');
   testLuhnAlgorithm();
   testRegexCategories();
+  testSoftHeuristicCredentialDetection();
   testAcademicPaperFalsePositiveRegression();
   console.log('--- All Regex Detector Tests Passed Successfully! ---\n');
 }

@@ -121,6 +121,133 @@ function isChunkTriagedForLLM(chunkText) {
   return false;
 }
 
+/**
+ * Heuristic Priority Sampling (Top-K Chunk Selection).
+ * Ranks input chunks by suspicion score (sensitive keywords: +5, high entropy: +3).
+ * Filters out benign chunks (score == 0) and returns the top `limit` candidate chunks.
+ * 
+ * @param {Array<Object|string>} chunks Array of chunk objects {chunkIndex, text} or string chunks
+ * @param {number} [limit=2] Maximum number of suspicious chunks to select
+ * @returns {Array<{chunkIndex: number, text: string, suspicionScore: number}>} Top-K candidate chunks
+ */
+function selectPriorityChunks(chunks, limit = 2) {
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    return [];
+  }
+
+  const scoredChunks = chunks.map((chunk, idx) => {
+    const chunkText = typeof chunk === 'string' ? chunk : (chunk && chunk.text ? chunk.text : '');
+    const chunkIndex = typeof chunk === 'object' && chunk && typeof chunk.chunkIndex === 'number' 
+      ? chunk.chunkIndex 
+      : idx;
+
+    let suspicionScore = 0;
+
+    if (hasSensitiveKeywords(chunkText)) {
+      suspicionScore += 5;
+    }
+
+    if (hasHighEntropyTokens(chunkText, 16, 4.2) || calculateShannonEntropy(chunkText) > 4.2) {
+      suspicionScore += 3;
+    }
+
+    return {
+      chunkIndex,
+      text: chunkText,
+      suspicionScore
+    };
+  });
+
+  // Filter out benign chunks (score == 0)
+  const suspiciousChunks = scoredChunks.filter(c => c.suspicionScore > 0);
+
+  // Sort descending by suspicion score
+  suspiciousChunks.sort((a, b) => b.suspicionScore - a.suspicionScore);
+
+  // Return top limit
+  return suspiciousChunks.slice(0, limit);
+}
+
+/**
+ * Multi-Domain Governance Lexicon Anchor Pattern.
+ * Covers Corporate, Legal, HR, Medical, and Technical trigger keywords.
+ */
+const GOVERNANCE_ANCHOR_REGEX = /\b(?:acquire|acquisition|merger|valuation|ebitda|revenue|insider|layoff|restructure|termination|severance|compensation|salary|equity|nda|confidential|proprietary|classified|privileged|internal\s+only|do\s+not\s+distribute|diagnosis|patient|biopsy|relapse|oncology|prescription|api[_-]?key|secret|password|passcode|token|credentials|database_url|credit[_-]?card|ssn|social[_-]?security)\b/gi;
+
+/**
+ * Hybrid Locality-Aware Anchor Windowing (H-LAAW).
+ * Creates at most 2 focused evaluation snippets for large documents (> 2500 chars):
+ * - Snippet 1 (Structural Context): Document head (first 1500 chars).
+ * - Snippet 2 (Highest-Priority Anchor Locus): Focused window (C +/- 400 chars) centered on critical anchor hit.
+ * Short text (<= 2500 chars) is evaluated 100% full-text with zero blindspot.
+ * 
+ * @param {string} text Full extracted document text
+ * @param {number} [headLimit=1500] Character length limit for document head snippet
+ * @param {number} [windowRadius=400] Character radius surrounding anchor center
+ * @returns {Array<{chunkIndex: number, text: string, windowType: string, isFullText?: boolean, anchorCenter?: number, startChar?: number, endChar?: number}>}
+ */
+function buildLAAWWindows(text, headLimit = 1500, windowRadius = 400) {
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    return [];
+  }
+
+  const cleanText = text.trim();
+
+  // Short text (<= 2500 chars): 100% full-text evaluation, zero blindspot
+  if (cleanText.length <= 2500) {
+    return [{
+      chunkIndex: 0,
+      text: cleanText,
+      windowType: 'FULL',
+      isFullText: true,
+      startChar: 0,
+      endChar: cleanText.length
+    }];
+  }
+
+  const windows = [];
+
+  // Snippet 1 (Structural Context): Document Head
+  const headText = cleanText.substring(0, headLimit);
+  windows.push({
+    chunkIndex: 0,
+    text: headText,
+    windowType: 'HEAD',
+    startChar: 0,
+    endChar: headText.length
+  });
+
+  // Anchor Locus Search across text outside document head
+  let bestMatchIndex = -1;
+  let match;
+
+  GOVERNANCE_ANCHOR_REGEX.lastIndex = 0;
+  while ((match = GOVERNANCE_ANCHOR_REGEX.exec(cleanText)) !== null) {
+    const matchIdx = match.index;
+    if (matchIdx > headLimit) {
+      bestMatchIndex = matchIdx + Math.floor(match[0].length / 2);
+      break; // Select the first high-priority governance anchor outside head
+    }
+  }
+
+  if (bestMatchIndex > headLimit) {
+    const startChar = Math.max(0, bestMatchIndex - windowRadius);
+    const endChar = Math.min(cleanText.length, bestMatchIndex + windowRadius);
+    const windowText = cleanText.substring(startChar, endChar);
+
+    windows.push({
+      chunkIndex: 1,
+      text: windowText,
+      windowType: 'ANCHOR_LOCUS',
+      anchorCenter: bestMatchIndex,
+      startChar,
+      endChar
+    });
+  }
+
+  return windows;
+}
+
 // Universal Export Wrapper for Node.js, Web Worker, and Browser Contexts
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
@@ -128,7 +255,10 @@ if (typeof module !== 'undefined' && module.exports) {
     calculateShannonEntropy,
     hasSensitiveKeywords,
     hasHighEntropyTokens,
-    isChunkTriagedForLLM
+    isChunkTriagedForLLM,
+    selectPriorityChunks,
+    GOVERNANCE_ANCHOR_REGEX,
+    buildLAAWWindows
   };
 }
 if (typeof globalThis !== 'undefined') {
@@ -137,6 +267,9 @@ if (typeof globalThis !== 'undefined') {
   globalThis.hasSensitiveKeywords = hasSensitiveKeywords;
   globalThis.hasHighEntropyTokens = hasHighEntropyTokens;
   globalThis.isChunkTriagedForLLM = isChunkTriagedForLLM;
+  globalThis.selectPriorityChunks = selectPriorityChunks;
+  globalThis.GOVERNANCE_ANCHOR_REGEX = GOVERNANCE_ANCHOR_REGEX;
+  globalThis.buildLAAWWindows = buildLAAWWindows;
 }
 if (typeof self !== 'undefined') {
   self.normalizeText = normalizeText;
@@ -144,4 +277,7 @@ if (typeof self !== 'undefined') {
   self.hasSensitiveKeywords = hasSensitiveKeywords;
   self.hasHighEntropyTokens = hasHighEntropyTokens;
   self.isChunkTriagedForLLM = isChunkTriagedForLLM;
+  self.selectPriorityChunks = selectPriorityChunks;
+  self.GOVERNANCE_ANCHOR_REGEX = GOVERNANCE_ANCHOR_REGEX;
+  self.buildLAAWWindows = buildLAAWWindows;
 }

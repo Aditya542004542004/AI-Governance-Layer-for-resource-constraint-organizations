@@ -12,8 +12,10 @@ const DEFAULT_RISK_CONFIG = {
   categoryBaseScores: {
     credit_card: 100,
     api_key: 100,
+    database_url: 100,
     national_id: 85,
     pin_passcode: 85,
+    potential_credential: 30,
     email: 40,
     phone: 30,
     medical: 90,
@@ -137,15 +139,23 @@ function calculateRiskScore({
   // Clamp normalized score to [0, 100] range
   finalScore = Math.min(100, Math.max(0, finalScore));
 
+  // Detect LLM timeout occurrence
+  const timedOut = Boolean(
+    (llmResult && llmResult.timedOut) || 
+    (Array.isArray(chunkLLMResults) && chunkLLMResults.some(c => c.timedOut))
+  );
+
   return {
     score: finalScore,
+    timedOut: timedOut,
     breakdown: {
       regexScore: maxRegexScore,
       llmScore: llmScore,
       rawContentScore: rawContentScore,
       roleMultiplier: roleMultiplier,
       destinationMultiplier: destinationMultiplier,
-      hasCriticalHit: hasCriticalHit
+      hasCriticalHit: hasCriticalHit,
+      timedOut: timedOut
     }
   };
 }
