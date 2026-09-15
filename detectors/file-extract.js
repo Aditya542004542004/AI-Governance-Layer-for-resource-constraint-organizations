@@ -84,6 +84,7 @@ async function fileToUint8Array(fileInput) {
   if (typeof Buffer !== 'undefined' && Buffer.isBuffer(fileInput)) return new Uint8Array(fileInput);
   
   if (fileInput.buffer) {
+    if (fileInput.buffer instanceof Uint8Array) return fileInput.buffer;
     if (fileInput.buffer instanceof ArrayBuffer) return new Uint8Array(fileInput.buffer);
     if (typeof Buffer !== 'undefined' && Buffer.isBuffer(fileInput.buffer)) {
       return new Uint8Array(fileInput.buffer.buffer, fileInput.buffer.byteOffset, fileInput.buffer.byteLength);
@@ -136,7 +137,8 @@ async function extractTextFromFile(fileInput) {
     const textExts = ['txt', 'env', 'csv', 'json', 'md', 'log', 'xml', 'js', 'html', 'py', 'yaml', 'yml', 'ini', 'conf', 'properties', 'toml', 'sh', 'bash', 'zsh', 'ps1', 'ts', 'tsx', 'jsx', 'sql', 'pem', 'key', 'cer', 'crt'];
     const isEnvFile = fileName.startsWith('.env') || ext === 'env' || ext.startsWith('env') || fileName.endsWith('.env');
 
-    if (isEnvFile || textExts.includes(ext) || mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('javascript') || mimeType.includes('xml')) {
+    const isXmlMime = mimeType === 'text/xml' || mimeType === 'application/xml' || mimeType.endsWith('/xml');
+    if (isEnvFile || textExts.includes(ext) || mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('javascript') || isXmlMime) {
       const plainText = new TextDecoder('utf-8').decode(bytes);
       result = {
         fullText: plainText,
@@ -147,7 +149,7 @@ async function extractTextFromFile(fileInput) {
     // 3. PDF Documents (.pdf)
     else if (ext === 'pdf' || mimeType.includes('pdf')) {
       if (typeof extractPdfText === 'function') {
-        result = extractPdfText(bytes);
+        result = await extractPdfText(bytes);
       } else {
         result.unscannable = true;
         result.reason = 'PDF extraction module unavailable.';
@@ -156,7 +158,7 @@ async function extractTextFromFile(fileInput) {
     // 4. Word Documents (.docx)
     else if (ext === 'docx' || mimeType.includes('wordprocessingml')) {
       if (typeof extractDocxText === 'function') {
-        result = extractDocxText(bytes);
+        result = await extractDocxText(bytes);
       } else {
         result.unscannable = true;
         result.fullText = '';

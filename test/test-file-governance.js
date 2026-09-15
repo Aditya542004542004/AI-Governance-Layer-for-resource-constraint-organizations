@@ -61,6 +61,31 @@ async function testFileTextExtraction() {
   assert.strictEqual(pdfResult.unscannable, false, 'PDF with text stream objects should be scannable');
   assert.strictEqual(pdfResult.text.includes('999-88-7777'), true, 'PDF text must extract SSN');
 
+  // 5. DEFLATE-Compressed Microsoft Word (.docx) ZIP Entry Test
+  const zlib = require('zlib');
+  const xmlPayload = Buffer.from('<w:document><w:body><w:p><w:t>Secret DOCX text sk-proj-998877665544332211223344</w:t></w:p></w:body></w:document>');
+  const deflated = zlib.deflateRawSync(xmlPayload);
+  
+  const entryNameBuf = Buffer.from('word/document.xml');
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0); // PK\x03\x04
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(8, 8); // Compression: 8 (Deflate)
+  header.writeUInt32LE(deflated.length, 18); // compressed size
+  header.writeUInt32LE(xmlPayload.length, 22); // uncompressed size
+  header.writeUInt16LE(entryNameBuf.length, 26);
+  header.writeUInt16LE(0, 28);
+  
+  const zipBuffer = Buffer.concat([header, entryNameBuf, deflated]);
+  const compressedDocxResult = await extractTextFromFile({
+    name: 'test1doc.docx',
+    buffer: zipBuffer,
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+  assert.strictEqual(compressedDocxResult.unscannable, false, 'DEFLATE compressed DOCX must be scannable');
+  assert.strictEqual(compressedDocxResult.text.includes('sk-proj-998877665544332211223344'), true, 'Must extract sensitive key from DEFLATE compressed DOCX');
+
   console.log('  ✓ File Text Extraction tests passed.');
 }
 

@@ -36,6 +36,9 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
     chrome.storage.local.set(stored, () => {
       console.log('[AI Governance] Service worker installed & policy storage initialized.');
+      if (typeof clearFileHashCache === 'function') {
+        clearFileHashCache().catch(() => {});
+      }
     });
   });
 });
@@ -49,13 +52,18 @@ async function computeSHA256Hash(textOrBytes) {
   try {
     let buffer;
     if (typeof textOrBytes === 'string') {
+      if (textOrBytes.trim().length === 0) return null;
       buffer = new TextEncoder().encode(textOrBytes);
     } else if (textOrBytes instanceof Uint8Array) {
-      buffer = textOrBytes.buffer;
+      if (textOrBytes.byteLength === 0) return null;
+      buffer = textOrBytes.buffer.slice(textOrBytes.byteOffset, textOrBytes.byteOffset + textOrBytes.byteLength);
     } else if (textOrBytes instanceof ArrayBuffer) {
+      if (textOrBytes.byteLength === 0) return null;
       buffer = textOrBytes;
     } else {
-      buffer = new TextEncoder().encode(String(textOrBytes || ''));
+      const str = String(textOrBytes || '').trim();
+      if (str.length === 0) return null;
+      buffer = new TextEncoder().encode(str);
     }
     if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
       const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
@@ -227,7 +235,11 @@ async function handleAnalyzeFile(payload) {
   const startTime = performance.now();
 
   // 1. Cryptographic File Deduplication (SHA-256 Cache Check < 5ms)
-  const fileHash = await computeSHA256Hash(text || fileName);
+  // ONLY hash valid non-empty extracted text content (NEVER fall back to fileName!)
+  const fileHash = (text && typeof text === 'string' && text.trim().length > 0 && !unscannable) 
+    ? await computeSHA256Hash(text) 
+    : null;
+
   if (fileHash && typeof getFileHashCache === 'function') {
     const cached = await getFileHashCache(fileHash);
     if (cached) {
@@ -431,7 +443,7 @@ async function handleAnalyzeFile(payload) {
     latencyMs: totalLatencyMs
   };
 
-  if (fileHash && typeof saveFileHashCache === 'function') {
+  if (fileHash && text && text.trim().length > 0 && !unscannable && typeof saveFileHashCache === 'function') {
     await saveFileHashCache({ hash: fileHash, ...result });
   }
 
