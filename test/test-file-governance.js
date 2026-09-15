@@ -35,6 +35,32 @@ async function testFileTextExtraction() {
   assert.strictEqual(imgResult.unscannable, true, 'Image file MUST be flagged as unscannable');
   assert.strictEqual(imgResult.reason.includes('Fail-Closed'), true, 'Must cite Fail-Closed Security Policy');
 
+  // 3. Microsoft Word (.docx) Extraction Test
+  const docxXmlBuffer = Buffer.from(
+    'PK\x03\x04<w:document><w:body><w:p><w:t>Confidential Project Valuation EBITDA: 50M. API Key: sk-proj-123456789012345678901234</w:t></w:p></w:body></w:document>',
+    'binary'
+  );
+  const docxResult = await extractTextFromFile({
+    name: 'corporate_valuation.docx',
+    buffer: docxXmlBuffer,
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+  assert.strictEqual(docxResult.unscannable, false, 'DOCX with text nodes should be scannable');
+  assert.strictEqual(docxResult.text.includes('sk-proj-123456789012345678901234'), true, 'DOCX text must extract sensitive secret key');
+
+  // 4. Adobe PDF (.pdf) Extraction Test
+  const pdfStreamBuffer = Buffer.from(
+    '%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n2 0 obj\n<< /Type /Page >>\nBT\n(Confidential Patient Biopsy Diagnosis: Malignant. SSN: 999-88-7777) Tj\nET\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF',
+    'binary'
+  );
+  const pdfResult = await extractTextFromFile({
+    name: 'medical_report.pdf',
+    buffer: pdfStreamBuffer,
+    type: 'application/pdf'
+  });
+  assert.strictEqual(pdfResult.unscannable, false, 'PDF with text stream objects should be scannable');
+  assert.strictEqual(pdfResult.text.includes('999-88-7777'), true, 'PDF text must extract SSN');
+
   console.log('  ✓ File Text Extraction tests passed.');
 }
 

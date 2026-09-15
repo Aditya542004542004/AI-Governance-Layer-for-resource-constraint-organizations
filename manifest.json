@@ -47,6 +47,7 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "vendor/*",
         "eval/eval-runner.html",
         "eval/eval-runner.js",
         "eval/test-set.json"

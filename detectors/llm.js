@@ -162,9 +162,9 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     };
 
     if (typeof LanguageModel !== 'undefined' && typeof LanguageModel.create === 'function') {
-      session = await LanguageModel.create(sessionOptions);
+      session = await promptWithTimeout(LanguageModel.create(sessionOptions), 3500);
     } else if (typeof ai !== 'undefined' && ai.languageModel && typeof ai.languageModel.create === 'function') {
-      session = await ai.languageModel.create(sessionOptions);
+      session = await promptWithTimeout(ai.languageModel.create(sessionOptions), 3500);
     }
 
     if (!session) {
@@ -172,7 +172,7 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
     const userPrompt = `Analyze prompt: "${text}"`;
-    const responseText = await promptWithTimeout(session, userPrompt, 3500);
+    const responseText = await promptWithTimeout(session.prompt(userPrompt), 3500);
     const latencyMs = performance.now() - startTime;
 
     // Parse with resilient extractor
@@ -187,7 +187,11 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     };
 
   } catch (err) {
-    console.error('[AI Governance] Error during local LLM execution:', err);
+    if (err.message === 'LLM_TIMEOUT') {
+      console.warn('[AI Governance] Local LLM execution timed out (3500ms limit). Gracefully falling back to Regex-only.');
+    } else {
+      console.error('[AI Governance] Error during local LLM execution:', err);
+    }
     return {
       sensitive: false,
       category: null,
@@ -210,12 +214,25 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
 }
 
 /**
- * Helper to wrap session.prompt with a strict timeout (default 3500ms).
+ * Helper to wrap any promise (session creation or prompt execution) with a strict timeout (default 3500ms).
  */
-function promptWithTimeout(session, promptText, timeoutMs = 3500) {
+function promptWithTimeout(promiseOrSession, promptOrMs = 3500, timeoutMs = 3500) {
+  let targetPromise;
+  let effectiveTimeout = timeoutMs;
+
+  if (promiseOrSession && typeof promiseOrSession.then === 'function') {
+    targetPromise = promiseOrSession;
+    if (typeof promptOrMs === 'number') effectiveTimeout = promptOrMs;
+  } else if (promiseOrSession && typeof promiseOrSession.prompt === 'function') {
+    targetPromise = promiseOrSession.prompt(promptOrMs);
+    if (typeof timeoutMs === 'number') effectiveTimeout = timeoutMs;
+  } else {
+    targetPromise = Promise.resolve(promiseOrSession);
+  }
+
   return Promise.race([
-    session.prompt(promptText),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('LLM_TIMEOUT')), timeoutMs))
+    targetPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('LLM_TIMEOUT')), effectiveTimeout))
   ]);
 }
 
@@ -309,9 +326,9 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     };
 
     if (typeof LanguageModel !== 'undefined' && typeof LanguageModel.create === 'function') {
-      session = await LanguageModel.create(sessionOptions);
+      session = await promptWithTimeout(LanguageModel.create(sessionOptions), 3500);
     } else if (typeof ai !== 'undefined' && ai.languageModel && typeof ai.languageModel.create === 'function') {
-      session = await ai.languageModel.create(sessionOptions);
+      session = await promptWithTimeout(ai.languageModel.create(sessionOptions), 3500);
     }
 
     const sessionTimeMs = Math.round(performance.now() - sessionStart);
@@ -327,7 +344,7 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
 
       let responseText = null;
       try {
-        responseText = await promptWithTimeout(session, `Analyze prompt: "${chunk.text}"`, 3500);
+        responseText = await promptWithTimeout(session.prompt(`Analyze prompt: "${chunk.text}"`), 3500);
       } catch (timeoutErr) {
         console.warn(`[AI Governance Perf] Priority Chunk ${chunk.chunkIndex} timed out (3500ms limit). Flagging LLM_TIMEOUT.`);
         results.push({
@@ -366,7 +383,11 @@ Respond ONLY with a valid JSON object. No explanation, no markdown backticks, no
     }
 
   } catch (err) {
-    console.error('[AI Governance Perf] Error in runMultiChunkLLMCheck (graceful fallback active):', err);
+    if (err.message === 'LLM_TIMEOUT') {
+      console.warn('[AI Governance Perf] Local LLM multi-chunk check timed out (3500ms limit). Gracefully falling back to Regex-only.');
+    } else {
+      console.error('[AI Governance Perf] Error in runMultiChunkLLMCheck (graceful fallback active):', err);
+    }
     candidateChunks.forEach(c => {
       if (!results.some(r => r.chunkIndex === c.chunkIndex)) {
         results.push({
