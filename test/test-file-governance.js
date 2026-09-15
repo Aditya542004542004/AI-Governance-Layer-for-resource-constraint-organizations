@@ -86,6 +86,18 @@ async function testFileTextExtraction() {
   assert.strictEqual(compressedDocxResult.unscannable, false, 'DEFLATE compressed DOCX must be scannable');
   assert.strictEqual(compressedDocxResult.text.includes('sk-proj-998877665544332211223344'), true, 'Must extract sensitive key from DEFLATE compressed DOCX');
 
+  // 6. Binary Garbage Stream PDF Test (Verifies binary gibberish is rejected and flagged as unscannable Fail-Closed)
+  const binaryGarbagePdfBuffer = Buffer.from(
+    '%PDF-1.4\n1 0 obj\nBT (5\xD8f\xB2\xDB\xDB\xDBK\xF5ZcT\xB0\xA4\xC4#\xA9`\xD0) ET\nendobj\n%%EOF',
+    'latin1'
+  );
+  const garbagePdfResult = await extractTextFromFile({
+    name: 'intro.pdf',
+    buffer: binaryGarbagePdfBuffer,
+    type: 'application/pdf'
+  });
+  assert.strictEqual(garbagePdfResult.unscannable, true, 'Binary stream garbage PDF MUST be flagged as unscannable (Fail-Closed active)');
+
   console.log('  ✓ File Text Extraction tests passed.');
 }
 
