@@ -19,6 +19,7 @@
 .ai-gov-modal-card {
   width: 90%;
   max-width: 520px;
+  max-height: 85vh;
   background: #1e293b;
   border-radius: 16px;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
@@ -35,6 +36,7 @@
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #334155;
+  flex-shrink: 0;
 }
 
 .ai-gov-modal-header.block {
@@ -84,6 +86,9 @@
   font-size: 14px;
   line-height: 1.6;
   color: #cbd5e1;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  max-height: 55vh;
 }
 
 .ai-gov-risk-meter {
@@ -115,10 +120,15 @@
   margin: 12px 0 0 0;
   padding-left: 20px;
   color: #94a3b8;
+  max-height: 25vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #1e293b;
 }
 
 .ai-gov-reasons-list li {
   margin-bottom: 6px;
+  word-break: break-word;
 }
 
 .ai-gov-modal-footer {
@@ -128,6 +138,10 @@
   justify-content: flex-end;
   gap: 12px;
   border-top: 1px solid #334155;
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
 }
 
 .ai-gov-btn {

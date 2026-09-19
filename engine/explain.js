@@ -24,14 +24,14 @@ function generateExplanation(policyResult) {
     return `${subjectText} was allowed (risk score ${riskScore}/100): no sensitive patterns or policy risks were detected. You may proceed.`;
   }
 
-  // Summarize main reasons into readable clauses
-  const reasonDescriptions = reasons.map(r => r.description);
+  // Summarize main reasons into readable clauses with unique counts
+  const uniqueReasons = Array.from(new Set(reasons.map(r => typeof r === 'object' && r ? (r.description || String(r)) : String(r))));
   let primaryReasonText = '';
 
-  if (reasonDescriptions.length === 1) {
-    primaryReasonText = reasonDescriptions[0];
-  } else if (reasonDescriptions.length > 1) {
-    primaryReasonText = `${reasonDescriptions[0]} (and ${reasonDescriptions.length - 1} other item${reasonDescriptions.length > 2 ? 's' : ''})`;
+  if (uniqueReasons.length === 1) {
+    primaryReasonText = uniqueReasons[0];
+  } else if (uniqueReasons.length > 1) {
+    primaryReasonText = `${uniqueReasons[0]} (and ${reasons.length - 1} other item${reasons.length > 2 ? 's' : ''})`;
   } else {
     primaryReasonText = `exceed risk threshold limits (score ${riskScore}/100)`;
   }

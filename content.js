@@ -609,7 +609,18 @@
     overlay.className = 'ai-gov-modal-overlay';
 
     const isBlock = action === 'block';
-    const reasonsHtml = (reasons || []).map(r => `<li>${escapeHtml(r.description)}</li>`).join('');
+
+    // Deduplicate and aggregate policy reason descriptions (e.g. 10x Email Address -> "Email Address (×10)")
+    const reasonCounts = {};
+    (reasons || []).forEach(r => {
+      const desc = typeof r === 'object' && r ? (r.description || r.type || JSON.stringify(r)) : String(r);
+      reasonCounts[desc] = (reasonCounts[desc] || 0) + 1;
+    });
+
+    const reasonsHtml = Object.entries(reasonCounts).map(([desc, count]) => {
+      const countBadge = count > 1 ? ` <span style="background: #334155; color: #f8fafc; padding: 2px 6px; border-radius: 10px; font-size: 11px; font-weight: 700;">×${count}</span>` : '';
+      return `<li>${escapeHtml(desc)}${countBadge}</li>`;
+    }).join('');
 
     // Dynamic button labels based on action type
     let primaryButtonText = 'Remove Flagged Data & Send';
