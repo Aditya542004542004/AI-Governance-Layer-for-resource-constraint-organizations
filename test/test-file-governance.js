@@ -98,6 +98,50 @@ async function testFileTextExtraction() {
   });
   assert.strictEqual(garbagePdfResult.unscannable, true, 'Binary stream garbage PDF MUST be flagged as unscannable (Fail-Closed active)');
 
+  // 7. DEFLATE-Compressed Microsoft Excel (.xlsx) Extraction Test
+  const xlsxXmlPayload = Buffer.from('<sst><si><t>Employee Financial Salaries API Key: sk-proj-112233445566778899001122</t></si></sst>');
+  const xlsxDeflated = zlib.deflateRawSync(xlsxXmlPayload);
+  const xlsxEntryName = Buffer.from('xl/sharedStrings.xml');
+  const xlsxHeader = Buffer.alloc(30);
+  xlsxHeader.writeUInt32LE(0x04034b50, 0);
+  xlsxHeader.writeUInt16LE(20, 4);
+  xlsxHeader.writeUInt16LE(0, 6);
+  xlsxHeader.writeUInt16LE(8, 8);
+  xlsxHeader.writeUInt32LE(xlsxDeflated.length, 18);
+  xlsxHeader.writeUInt32LE(xlsxXmlPayload.length, 22);
+  xlsxHeader.writeUInt16LE(xlsxEntryName.length, 26);
+  xlsxHeader.writeUInt16LE(0, 28);
+  const xlsxZipBuffer = Buffer.concat([xlsxHeader, xlsxEntryName, xlsxDeflated]);
+  const xlsxResult = await extractTextFromFile({
+    name: 'financial_report.xlsx',
+    buffer: xlsxZipBuffer,
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  assert.strictEqual(xlsxResult.unscannable, false, 'DEFLATE compressed XLSX must be scannable');
+  assert.strictEqual(xlsxResult.text.includes('sk-proj-112233445566778899001122'), true, 'Must extract sensitive key from XLSX shared strings');
+
+  // 8. DEFLATE-Compressed Microsoft PowerPoint (.pptx) Extraction Test
+  const pptxXmlPayload = Buffer.from('<p:sld><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Executive Q4 Strategy Passcode: 84920 Server Key: sk-proj-556677889900112233445566</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>');
+  const pptxDeflated = zlib.deflateRawSync(pptxXmlPayload);
+  const pptxEntryName = Buffer.from('ppt/slides/slide1.xml');
+  const pptxHeader = Buffer.alloc(30);
+  pptxHeader.writeUInt32LE(0x04034b50, 0);
+  pptxHeader.writeUInt16LE(20, 4);
+  pptxHeader.writeUInt16LE(0, 6);
+  pptxHeader.writeUInt16LE(8, 8);
+  pptxHeader.writeUInt32LE(pptxDeflated.length, 18);
+  pptxHeader.writeUInt32LE(pptxXmlPayload.length, 22);
+  pptxHeader.writeUInt16LE(pptxEntryName.length, 26);
+  pptxHeader.writeUInt16LE(0, 28);
+  const pptxZipBuffer = Buffer.concat([pptxHeader, pptxEntryName, pptxDeflated]);
+  const pptxResult = await extractTextFromFile({
+    name: 'q4_presentation.pptx',
+    buffer: pptxZipBuffer,
+    type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+  });
+  assert.strictEqual(pptxResult.unscannable, false, 'DEFLATE compressed PPTX must be scannable');
+  assert.strictEqual(pptxResult.text.includes('sk-proj-556677889900112233445566'), true, 'Must extract sensitive key from PPTX slide text');
+
   console.log('  ✓ File Text Extraction tests passed.');
 }
 

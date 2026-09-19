@@ -14,10 +14,12 @@ if (typeof require !== 'undefined') {
     const pdfLib = require('../lib/pdf-extract.js');
     const docxLib = require('../lib/docx-extract.js');
     const xlsxLib = require('../lib/xlsx-extract.js');
+    const pptxLib = require('../lib/pptx-extract.js');
     const preprocess = require('../engine/preprocess.js');
     globalThis.extractPdfText = pdfLib.extractPdfText;
     globalThis.extractDocxText = docxLib.extractDocxText;
     globalThis.extractXlsxText = xlsxLib.extractXlsxText;
+    globalThis.extractPptxText = pptxLib.extractPptxText;
     if (preprocess.buildLAAWWindows) {
       globalThis.buildLAAWWindows = preprocess.buildLAAWWindows;
     }
@@ -168,14 +170,24 @@ async function extractTextFromFile(fileInput) {
     // 5. Excel Spreadsheets (.xlsx, .xls)
     else if (ext === 'xlsx' || ext === 'xls' || mimeType.includes('spreadsheetml')) {
       if (typeof extractXlsxText === 'function') {
-        result = extractXlsxText(bytes);
+        result = await extractXlsxText(bytes);
       } else {
         result.unscannable = true;
         result.fullText = '';
         result.reason = 'XLSX extraction module unavailable (UNSCANNABLE_BINARY). Fail-Closed active.';
       }
     }
-    // 6. Unknown / Unrecognized Format
+    // 6. PowerPoint Presentations (.pptx, .ppt)
+    else if (ext === 'pptx' || ext === 'ppt' || mimeType.includes('presentationml')) {
+      if (typeof extractPptxText === 'function') {
+        result = await extractPptxText(bytes);
+      } else {
+        result.unscannable = true;
+        result.fullText = '';
+        result.reason = 'PPTX extraction module unavailable (UNSCANNABLE_BINARY). Fail-Closed active.';
+      }
+    }
+    // 7. Unknown / Unrecognized Format
     else {
       result.unscannable = true;
       result.fullText = '';

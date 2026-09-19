@@ -25,6 +25,7 @@
         "lib/pdf-extract.js",
         "lib/docx-extract.js",
         "lib/xlsx-extract.js",
+        "lib/pptx-extract.js",
         "detectors/file-extract.js",
         "detectors/regex.js",
         "detectors/llm.js",

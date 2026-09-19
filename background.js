@@ -9,6 +9,11 @@
 // Load detection engines, policy layers, and local audit storage
 try {
   importScripts(
+    'lib/pdf-extract.js',
+    'lib/docx-extract.js',
+    'lib/xlsx-extract.js',
+    'lib/pptx-extract.js',
+    'detectors/file-extract.js',
     'detectors/regex.js',
     'detectors/llm.js',
     'engine/preprocess.js',
