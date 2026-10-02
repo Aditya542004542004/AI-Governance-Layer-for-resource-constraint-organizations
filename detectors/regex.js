@@ -79,6 +79,12 @@ const REGEX_CONFIG = [
     severity: 'low'
   },
   {
+    category: 'pii',
+    label: 'Author / Researcher Identity (PII)',
+    pattern: /\b(?:authors?|researchers?|investigators?|corresponding\s+author|affiliations?|department\s+of)\s*[:=]\s*[^\n\r]{3,120}/gi,
+    severity: 'medium'
+  },
+  {
     category: 'pin_passcode',
     label: 'ATM PIN / Password / Secret Passcode',
     // Requires explicit assignment syntax or strict pin assignment keywords
@@ -147,6 +153,19 @@ function runRegexChecks(text) {
     return [];
   }
 
+  // Pre-clean text to repair broken OCR spaces (e.g. "name @ domain . com" -> "name@domain.com")
+  let cleanText = text;
+  if (typeof cleanOcrText === 'function') {
+    cleanText = cleanOcrText(text);
+  } else if (typeof globalThis !== 'undefined' && typeof globalThis.cleanOcrText === 'function') {
+    cleanText = globalThis.cleanOcrText(text);
+  } else {
+    // Inline minimal OCR repair for email address spaces
+    cleanText = text
+      .replace(/([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9.-]+)/g, '$1@$2')
+      .replace(/@([a-zA-Z0-9.-]+)\s*\.\s*([a-zA-Z]{2,})/g, '@$1.$2');
+  }
+
   const results = [];
 
   for (const config of REGEX_CONFIG) {
@@ -154,7 +173,7 @@ function runRegexChecks(text) {
     config.pattern.lastIndex = 0;
     let match;
 
-    while ((match = config.pattern.exec(text)) !== null) {
+    while ((match = config.pattern.exec(cleanText)) !== null) {
       const matchedString = match[0];
 
       // Execute custom validation function if present (e.g. Luhn algorithm for credit cards)

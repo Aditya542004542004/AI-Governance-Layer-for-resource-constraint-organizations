@@ -335,7 +335,7 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
 
-      processFileGovernance(files, target);
+      processFileGovernance(files, target, 'change');
     }
   }
 
@@ -355,7 +355,7 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
 
-      processFileGovernance(files, event.target);
+      processFileGovernance(files, event.target, 'drop');
     }
   }
 
@@ -368,7 +368,7 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
 
-      processFileGovernance(files, event.target);
+      processFileGovernance(files, event.target, 'paste');
     }
   }
 
@@ -408,7 +408,7 @@
    * Processes file attachments through on-device text extraction & governance evaluation.
    * Supports multi-file parallel ingestion, on-device WebAssembly OCR for images, and progressive status feedback.
    */
-  async function processFileGovernance(files, targetElement) {
+  async function processFileGovernance(files, targetElement, eventType = 'change') {
     if (!files || files.length === 0) return;
 
     isScanningActive = true;
@@ -449,7 +449,7 @@
       if (extractedText.length === 0 || (confidence < 30 && extractedText.length === 0)) {
         console.log(`[AI Governance] Image '${file.name}' is purely visual (no text detected). Permitting attachment.`);
         unlockScanningState();
-        dispatchOriginalFileAttach(files, targetElement);
+        dispatchOriginalFileAttach(files, targetElement, eventType);
         return;
       }
 
@@ -468,7 +468,7 @@
 
           if (!response || !response.success) {
             console.error('[AI Governance] Error analyzing image OCR text:', response?.error);
-            dispatchOriginalFileAttach(files, targetElement);
+            dispatchOriginalFileAttach(files, targetElement, eventType);
             return;
           }
 
@@ -490,13 +490,13 @@
               explanation: data.explanation,
               reasons: data.reasons,
               onRedactAndResend: () => {
-                dispatchOriginalFileAttach(files, targetElement);
+                dispatchOriginalFileAttach(files, targetElement, eventType);
               },
               onDismiss: () => {}
             });
           } else {
             // Action = 'allow'
-            dispatchOriginalFileAttach(files, targetElement);
+            dispatchOriginalFileAttach(files, targetElement, eventType);
           }
         }
       );
@@ -570,7 +570,7 @@
 
         if (!response || !response.success) {
           console.error('[AI Governance] Error analyzing batch files:', response?.error);
-          dispatchOriginalFileAttach(files, targetElement);
+          dispatchOriginalFileAttach(files, targetElement, eventType);
           return;
         }
 
@@ -597,27 +597,91 @@
             explanation: data.explanation || redactFile.explanation,
             reasons: data.reasons || redactFile.reasons,
             onRedactAndResend: () => {
-              dispatchOriginalFileAttach(files, targetElement);
+              dispatchOriginalFileAttach(files, targetElement, eventType);
             },
             onDismiss: () => {}
           });
         } else {
-          dispatchOriginalFileAttach(files, targetElement);
+          dispatchOriginalFileAttach(files, targetElement, eventType);
         }
       }
     );
   }
 
-  function dispatchOriginalFileAttach(files, targetElement) {
+  /**
+   * Re-dispatches allowed file attachments to the host page (ChatGPT, Claude, Gemini).
+   * Constructs synthetic DragEvent ('drop'), ClipboardEvent ('paste'), and synchronizes native <input type="file">.
+   */
+  function dispatchOriginalFileAttach(files, targetElement, eventType = 'change') {
     isBypassingInterception = true;
 
     try {
-      if (targetElement && typeof targetElement.dispatchEvent === 'function') {
-        if (targetElement.tagName === 'INPUT' && targetElement.type === 'file') {
-          targetElement.dispatchEvent(new Event('change', { bubbles: true }));
-        } else if (document.contains(targetElement)) {
-          targetElement.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      // 1. Build a native DataTransfer populated with the allowed files
+      let dataTransfer = null;
+      if (typeof DataTransfer !== 'undefined') {
+        try {
+          dataTransfer = new DataTransfer();
+          for (const f of files) {
+            dataTransfer.items.add(f);
+          }
+        } catch (_) {}
+      }
+
+      // 2. Dispatch according to the original ingestion event type
+      if (eventType === 'drop' && dataTransfer) {
+        try {
+          const dropEvt = new DragEvent('drop', {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            dataTransfer: dataTransfer
+          });
+          const target = (targetElement && document.contains(targetElement)) 
+            ? targetElement 
+            : (findPromptInput() || document.querySelector('[contenteditable="true"]') || document.body);
+          target.dispatchEvent(dropEvt);
+        } catch (dropErr) {
+          console.warn('[AI Governance] DragEvent dispatch error:', dropErr);
         }
+      } else if (eventType === 'paste' && dataTransfer) {
+        try {
+          const pasteEvt = new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            clipboardData: dataTransfer
+          });
+          const target = (targetElement && document.contains(targetElement)) 
+            ? targetElement 
+            : (findPromptInput() || document.querySelector('[contenteditable="true"]') || document.body);
+          target.dispatchEvent(pasteEvt);
+        } catch (pasteErr) {
+          console.warn('[AI Governance] ClipboardEvent dispatch error:', pasteErr);
+        }
+      }
+
+      // 3. Update hidden or active file input element (supports ChatGPT, Claude, and Gemini native React state)
+      const fileInput = (targetElement && targetElement.tagName === 'INPUT' && targetElement.type === 'file')
+        ? targetElement
+        : document.querySelector('input[type="file"]');
+
+      if (fileInput) {
+        if (dataTransfer && dataTransfer.files) {
+          try {
+            fileInput.files = dataTransfer.files;
+          } catch (_) {}
+        }
+        // Reset React's internal value tracker if present so React accepts synthetic change
+        if (fileInput._valueTracker) {
+          try {
+            fileInput._valueTracker.setValue('');
+          } catch (_) {}
+        }
+        fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      } else if (targetElement && document.contains(targetElement)) {
+        targetElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        targetElement.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       }
     } catch (err) {
       console.warn('[AI Governance] Non-critical warning during file attach re-dispatch:', err);

@@ -82,6 +82,17 @@ function calculateRiskScore({
     }
   }
 
+  // Multi-Email or Bulk Contact Elevation:
+  // If 2+ emails or email + PII markers are detected (e.g. researcher/author contacts),
+  // elevate to PII severity (70) to ensure an appropriate warning is issued
+  const emailHits = regexMatches.filter(m => m.category === 'email');
+  if (emailHits.length >= 2) {
+    const piiBase = config.categoryBaseScores['pii'] || 70;
+    if (piiBase > maxRegexScore) {
+      maxRegexScore = piiBase;
+    }
+  }
+
   // 2. Calculate LLM contextual risk score component (Multi-chunk sensitive maximum preservation)
   let llmScore = 0;
   let topLLMCategory = null;

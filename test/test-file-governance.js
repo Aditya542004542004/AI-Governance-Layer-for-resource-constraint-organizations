@@ -403,6 +403,30 @@ async function testOnDeviceImageOcrGovernance() {
   assert.strictEqual(sensitivePolicy.fixedFloorTriggered, true, 'Visual evasion attempt MUST trigger Fixed Security Floor violation');
   assert.strictEqual(sensitivePolicy.riskScore >= 95, true, 'Sensitive image must receive maximum risk score');
 
+  // 4. Research Paper Image PII & Multi-Email Test (OCR spacing tolerance & 70% risk score):
+  // User uploads an image of a research paper containing researcher names and emails with OCR artifacts
+  const paperImageFile = {
+    name: 'ieee_research_paper_authors.png',
+    type: 'image/png',
+    __mockOcrResult: {
+      text: 'IEEE Transactions on Artificial Intelligence\nAuthors: Aditya Sharma, Dr. Rajesh Kumar\nAffiliation: Department of Computer Science, VIT University\nContact: aditya.sharma @ vit.ac.in , rkumar @ vit.edu\nAbstract - In this paper we study on-device AI...',
+      confidence: 89.0
+    }
+  };
+  const paperOcr = await extractTextFromImage(paperImageFile);
+  assert.strictEqual(paperOcr.confidence > 80, true, 'High confidence OCR for paper');
+
+  const paperRegex = runRegexChecks(paperOcr.text);
+  const emailHits = paperRegex.filter(m => m.category === 'email');
+  assert.strictEqual(emailHits.length >= 2, true, 'Must detect both researcher emails despite OCR whitespace artifacts');
+
+  const paperRisk = calculateRiskScore({ regexMatches: paperRegex, destinationDomain: 'chatgpt.com', unscannable: false });
+  assert.strictEqual(paperRisk.score >= 70, true, 'Multi-email / PII disclosure must receive a score of at least 70/100');
+
+  const paperPolicy = evaluatePolicy({ regexMatches: paperRegex, fileName: paperImageFile.name, riskAnalysis: paperRisk });
+  assert.strictEqual(paperPolicy.action, 'redact', 'Research paper with researcher PII/emails MUST trigger REDACT warning modal');
+  assert.strictEqual(paperPolicy.riskScore >= 70, true, 'Policy evaluated risk score must be >= 70/100');
+
   console.log('  ✓ On-Device WebAssembly Image OCR Governance tests passed.');
 }
 

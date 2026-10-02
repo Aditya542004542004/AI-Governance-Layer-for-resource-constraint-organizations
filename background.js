@@ -277,16 +277,29 @@ async function handleAnalyzeImageText(payload) {
     chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
   });
 
+  // Pre-clean OCR recognition artifacts (spaces in emails, broken symbols)
+  const cleanedText = (typeof cleanOcrText === 'function') 
+    ? cleanOcrText(extractedText) 
+    : (typeof globalThis !== 'undefined' && globalThis.cleanOcrText) 
+      ? globalThis.cleanOcrText(extractedText) 
+      : extractedText;
+
   // 1. Run Regex Checks
   let regexMatches = [];
-  if (settings.enableRegex !== false && typeof runRegexChecks === 'function' && extractedText) {
-    regexMatches = runRegexChecks(extractedText);
+  if (settings.enableRegex !== false && typeof runRegexChecks === 'function' && cleanedText) {
+    regexMatches = runRegexChecks(cleanedText);
   }
 
-  // 2. Run Local LLM Contextual Check (Gemini Nano)
+  // 2. Run Local LLM Contextual Check (Gemini Nano) with short-circuit and focused window
   let llmResult = { sensitive: false, category: null, confidence: 0, skipped: true };
-  if (settings.enableLLM !== false && typeof runLLMCheck === 'function' && extractedText) {
-    llmResult = await runLLMCheck(extractedText);
+  const hasFixedFloorRegexHit = regexMatches.some(m => 
+    m.category === 'credit_card' || m.category === 'api_key' || m.category === 'national_id' || m.category === 'pin_passcode' || m.category === 'database_url'
+  );
+
+  if (!hasFixedFloorRegexHit && settings.enableLLM !== false && typeof runLLMCheck === 'function' && cleanedText) {
+    // Focus LLM input to the top 1500 characters (author metadata, headers, credential anchors) to prevent token bloat & timeouts
+    const llmInput = cleanedText.length > 1500 ? cleanedText.slice(0, 1500) : cleanedText;
+    llmResult = await runLLMCheck(llmInput);
   }
 
   // 3. Compute Risk Score

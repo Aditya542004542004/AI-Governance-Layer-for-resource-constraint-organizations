@@ -31,6 +31,30 @@ function normalizeText(text) {
 }
 
 /**
+ * Cleans and repairs common OCR recognition artifacts from extracted image text.
+ * Fixes broken spacing in emails, split symbols, and common character misrecognitions.
+ * @param {string} text 
+ * @returns {string} Cleaned text
+ */
+function cleanOcrText(text) {
+  if (!text || typeof text !== 'string') return '';
+
+  return text
+    // Normalize line breaks
+    .replace(/\r\n/g, '\n')
+    // Fix OCR symbol replacements for '@': (a), [at], (at), ©, ®
+    .replace(/[\s\(\[]+(?:@|©|®|at|\(a\))[\s\)\]]+/gi, '@')
+    // Fix spaces around '@' in email addresses: 'user @ domain' -> 'user@domain'
+    .replace(/([a-zA-Z0-9._%+-]+)\s*@\s*([a-zA-Z0-9.-]+)/g, '$1@$2')
+    // Fix spaces before dot in email domains: '@domain . edu' -> '@domain.edu'
+    .replace(/@([a-zA-Z0-9.-]+)\s*\.\s*([a-zA-Z]{2,})/g, '@$1.$2')
+    // Fix spaces within common TLDs: '. com', '. edu', '. org', '. gov', '. in', '. ac. in'
+    .replace(/\.\s*(com|edu|org|gov|net|io|ai|in|ac|uk|de|ca)\b/gi, '.$1')
+    // Collapse extra horizontal spaces
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
+/**
  * Calculates base-2 Shannon Entropy for a given string or token.
  * Higher values (e.g. > 4.2) indicate high-entropy, random-looking data like API keys, secrets, or hashes.
  * @param {string} str 
@@ -252,6 +276,7 @@ function buildLAAWWindows(text, headLimit = 1500, windowRadius = 400) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     normalizeText,
+    cleanOcrText,
     calculateShannonEntropy,
     hasSensitiveKeywords,
     hasHighEntropyTokens,
@@ -263,6 +288,7 @@ if (typeof module !== 'undefined' && module.exports) {
 }
 if (typeof globalThis !== 'undefined') {
   globalThis.normalizeText = normalizeText;
+  globalThis.cleanOcrText = cleanOcrText;
   globalThis.calculateShannonEntropy = calculateShannonEntropy;
   globalThis.hasSensitiveKeywords = hasSensitiveKeywords;
   globalThis.hasHighEntropyTokens = hasHighEntropyTokens;
@@ -273,6 +299,7 @@ if (typeof globalThis !== 'undefined') {
 }
 if (typeof self !== 'undefined') {
   self.normalizeText = normalizeText;
+  self.cleanOcrText = cleanOcrText;
   self.calculateShannonEntropy = calculateShannonEntropy;
   self.hasSensitiveKeywords = hasSensitiveKeywords;
   self.hasHighEntropyTokens = hasHighEntropyTokens;
