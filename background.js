@@ -7,23 +7,42 @@
  */
 
 // Load detection engines, policy layers, and local audit storage
-try {
-  importScripts(
-    'lib/pdf-extract.js',
-    'lib/docx-extract.js',
-    'lib/xlsx-extract.js',
-    'lib/pptx-extract.js',
-    'detectors/file-extract.js',
-    'detectors/regex.js',
-    'detectors/llm.js',
-    'engine/preprocess.js',
-    'engine/risk-score.js',
-    'engine/policy.js',
-    'engine/explain.js',
-    'storage/audit.js'
-  );
-} catch (err) {
-  console.error('[AI Governance] Background service worker failed to import script dependencies:', err);
+if (typeof importScripts !== 'undefined') {
+  try {
+    importScripts(
+      'lib/pdf-extract.js',
+      'lib/docx-extract.js',
+      'lib/xlsx-extract.js',
+      'lib/pptx-extract.js',
+      'lib/ocr.js',
+      'detectors/file-extract.js',
+      'detectors/regex.js',
+      'detectors/llm.js',
+      'engine/preprocess.js',
+      'engine/risk-score.js',
+      'engine/policy.js',
+      'engine/explain.js',
+      'storage/audit.js'
+    );
+  } catch (err) {
+    console.error('[AI Governance] Background service worker failed to import script dependencies:', err);
+  }
+} else if (typeof require !== 'undefined') {
+  try {
+    require('./lib/pdf-extract.js');
+    require('./lib/docx-extract.js');
+    require('./lib/xlsx-extract.js');
+    require('./lib/pptx-extract.js');
+    require('./lib/ocr.js');
+    require('./detectors/file-extract.js');
+    Object.assign(globalThis, require('./detectors/regex.js'));
+    Object.assign(globalThis, require('./detectors/llm.js'));
+    Object.assign(globalThis, require('./engine/preprocess.js'));
+    Object.assign(globalThis, require('./engine/risk-score.js'));
+    Object.assign(globalThis, require('./engine/policy.js'));
+    Object.assign(globalThis, require('./engine/explain.js'));
+    Object.assign(globalThis, require('./storage/audit.js'));
+  } catch (err) {}
 }
 
 // Default extension configuration settings stored in chrome.storage.local
@@ -112,6 +131,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(response => sendResponse({ success: true, data: response }))
       .catch(err => {
         console.error('[AI Governance] Error processing batch file analysis:', err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'ANALYZE_IMAGE_TEXT') {
+    handleAnalyzeImageText(message.payload)
+      .then(response => sendResponse({ success: true, data: response }))
+      .catch(err => {
+        console.error('[AI Governance] Error processing image OCR text analysis:', err);
         sendResponse({ success: false, error: err.message });
       });
     return true;
@@ -226,6 +255,103 @@ async function handleAnalyzePrompt(payload) {
     regexMatches: regexMatches,
     llmResult: llmResult,
     redactedText: policyResult.redactedText, // <--- Sent to content script
+    fixedFloorTriggered: policyResult.fixedFloorTriggered,
+    latencyMs: totalLatencyMs
+  };
+}
+
+/**
+ * Handles end-to-end evaluation pipeline for text extracted from an image attachment via on-device OCR.
+ * Routes extracted text into the dual-tier inspection pipeline (Regex + LLM) and logs an audit record with sourceType: 'image_ocr'.
+ * @param {Object} payload 
+ * @param {string} payload.extractedText Text extracted by on-device OCR
+ * @param {string} [payload.fileName='image.png'] Name of the image file
+ * @param {string} [payload.destinationDomain='unknown'] Destination host
+ * @returns {Promise<Object>}
+ */
+async function handleAnalyzeImageText(payload) {
+  const { extractedText = '', fileName = 'image.png', destinationDomain = 'unknown' } = payload || {};
+  const startTime = performance.now();
+
+  const settings = await new Promise((resolve) => {
+    chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
+  });
+
+  // 1. Run Regex Checks
+  let regexMatches = [];
+  if (settings.enableRegex !== false && typeof runRegexChecks === 'function' && extractedText) {
+    regexMatches = runRegexChecks(extractedText);
+  }
+
+  // 2. Run Local LLM Contextual Check (Gemini Nano)
+  let llmResult = { sensitive: false, category: null, confidence: 0, skipped: true };
+  if (settings.enableLLM !== false && typeof runLLMCheck === 'function' && extractedText) {
+    llmResult = await runLLMCheck(extractedText);
+  }
+
+  // 3. Compute Risk Score
+  const riskAnalysis = calculateRiskScore({
+    regexMatches: regexMatches,
+    llmResult: llmResult,
+    userRole: settings.userRole || 'engineering',
+    destinationDomain: destinationDomain,
+    customConfig: {
+      roleWeights: settings.roleWeights,
+      destinationTrust: settings.destinationTrust
+    }
+  });
+
+  // 4. Evaluate Policy
+  const policyResult = evaluatePolicy({
+    promptText: extractedText,
+    regexMatches: regexMatches,
+    llmResult: llmResult,
+    riskAnalysis: riskAnalysis,
+    fileName: fileName,
+    customPolicyConfig: {
+      blockThreshold: settings.blockThreshold,
+      redactThreshold: settings.redactThreshold
+    }
+  });
+
+  // 5. Generate Explanation
+  const explanation = generateExplanation({ ...policyResult, fileName });
+  const totalLatencyMs = Math.round(performance.now() - startTime);
+
+  const categories = [
+    ...regexMatches.map(m => m.category),
+    ...(llmResult && llmResult.sensitive ? [llmResult.category] : [])
+  ].filter(Boolean);
+
+  // 6. Save Full Detail Record to Local IndexedDB with sourceType: 'image_ocr'
+  if (typeof logAuditRecord === 'function') {
+    await logAuditRecord({
+      timestamp: new Date().toISOString(),
+      promptText: `[IMAGE OCR: ${fileName}] ${extractedText.substring(0, 300)}`,
+      destinationDomain: destinationDomain,
+      userRole: settings.userRole || 'engineering',
+      riskScore: policyResult.riskScore,
+      decision: policyResult.action,
+      explanation: explanation,
+      reasons: policyResult.reasons,
+      categories: Array.from(new Set(categories)),
+      fixedFloorTriggered: policyResult.fixedFloorTriggered,
+      latencyMs: totalLatencyMs,
+      sourceType: 'image_ocr',
+      fileName: fileName,
+      fileType: fileName.split('.').pop()
+    });
+  }
+
+  return {
+    action: policyResult.action,
+    riskScore: policyResult.riskScore,
+    explanation: explanation,
+    reasons: policyResult.reasons,
+    regexMatches: regexMatches,
+    llmResult: llmResult,
+    fileName: fileName,
+    sourceType: 'image_ocr',
     fixedFloorTriggered: policyResult.fixedFloorTriggered,
     latencyMs: totalLatencyMs
   };
@@ -510,5 +636,14 @@ async function handleAnalyzeBatchFiles(payload) {
     reasons: Array.from(new Set(phase1Results.flatMap(r => r.reasons || []))),
     fileResults: phase1Results,
     totalLatencyMs: Math.round(performance.now() - startTime)
+  };
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    handleAnalyzePrompt,
+    handleAnalyzeFile,
+    handleAnalyzeBatchFiles,
+    handleAnalyzeImageText
   };
 }

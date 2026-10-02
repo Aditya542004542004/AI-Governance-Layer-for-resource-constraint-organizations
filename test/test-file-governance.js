@@ -8,7 +8,10 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { extractTextFromFile, chunkText } = require('../detectors/file-extract.js');
+const { extractTextFromImage } = require('../lib/ocr.js');
 const { runRegexChecks } = require('../detectors/regex.js');
 const { calculateRiskScore } = require('../engine/risk-score.js');
 const { evaluatePolicy } = require('../engine/policy.js');
@@ -342,6 +345,67 @@ function testHybridLAAWWindowing() {
   console.log('  ✓ Hybrid Locality-Aware Anchor Windowing (H-LAAW) tests passed.');
 }
 
+async function testOnDeviceImageOcrGovernance() {
+  console.log('Testing On-Device WebAssembly Image OCR Governance...');
+
+  // 1. Verify local offline asset integrity (Zero external CDN calls)
+  const vendorDir = path.resolve(__dirname, '../vendor/tesseract');
+  assert.strictEqual(fs.existsSync(path.join(vendorDir, 'tesseract.min.js')), true, 'tesseract.min.js must exist locally');
+  assert.strictEqual(fs.existsSync(path.join(vendorDir, 'worker.min.js')), true, 'worker.min.js must exist locally');
+  assert.strictEqual(fs.existsSync(path.join(vendorDir, 'tesseract-core.wasm.js')), true, 'tesseract-core.wasm.js must exist locally');
+  assert.strictEqual(fs.existsSync(path.join(vendorDir, 'tesseract-core.wasm')), true, 'tesseract-core.wasm must exist locally');
+  assert.strictEqual(fs.existsSync(path.join(vendorDir, 'lang-data', 'eng.traineddata.gz')), true, 'eng.traineddata.gz must exist locally in vendor/tesseract/lang-data/');
+
+  // Verify manifest configuration
+  const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../manifest.json'), 'utf8'));
+  assert.strictEqual(manifest.content_security_policy.extension_pages.includes('wasm-unsafe-eval'), true, 'CSP must permit wasm-unsafe-eval');
+  assert.strictEqual(manifest.content_scripts[0].js.includes('vendor/tesseract/tesseract.min.js'), true, 'content_scripts must include tesseract.min.js');
+  assert.strictEqual(manifest.content_scripts[0].js.includes('lib/ocr.js'), true, 'content_scripts must include lib/ocr.js');
+
+  // 2. Purely Visual Image Test: empty text / low confidence -> ALLOW
+  const visualImageFile = {
+    name: 'architecture_diagram.png',
+    type: 'image/png',
+    __mockOcrResult: { text: '', confidence: 0 }
+  };
+  const visualOcr = await extractTextFromImage(visualImageFile);
+  assert.strictEqual(visualOcr.text, '', 'Purely visual image must produce empty extracted text');
+  assert.strictEqual(visualOcr.confidence, 0, 'Visual image confidence should be 0');
+
+  const visualRegex = runRegexChecks(visualOcr.text);
+  assert.strictEqual(visualRegex.length, 0, 'No regex triggers on empty text');
+  const visualRisk = calculateRiskScore({ regexMatches: visualRegex, unscannable: false });
+  const visualPolicy = evaluatePolicy({ regexMatches: visualRegex, fileName: visualImageFile.name, riskAnalysis: visualRisk });
+  assert.strictEqual(visualPolicy.action, 'allow', 'Purely visual image without text MUST be allowed');
+  assert.strictEqual(visualPolicy.riskScore, 0, 'Risk score for visual image MUST be 0');
+
+  // 3. Sensitive Image Evasion Test (Closing Visual Evasion):
+  // User attempts to bypass DLP by attaching a screenshot containing API keys
+  const sensitiveImageFile = {
+    name: 'cloud_credentials_screenshot.png',
+    type: 'image/png',
+    __mockOcrResult: {
+      text: 'AWS_ACCESS_KEY_ID = AKIAIOSFODNN7EXAMPLE\nSECRET_KEY = sk-proj-123456789012345678901234\n',
+      confidence: 92.5
+    }
+  };
+  const sensitiveOcr = await extractTextFromImage(sensitiveImageFile);
+  assert.strictEqual(sensitiveOcr.text.includes('sk-proj-'), true, 'OCR must extract credential text from image');
+  assert.strictEqual(sensitiveOcr.confidence > 90, true, 'High confidence OCR detection');
+
+  const sensitiveRegex = runRegexChecks(sensitiveOcr.text);
+  assert.strictEqual(sensitiveRegex.some(m => m.category === 'api_key'), true, 'Regex MUST detect API credentials extracted from image');
+
+  const sensitiveRisk = calculateRiskScore({ regexMatches: sensitiveRegex, unscannable: false });
+  const sensitivePolicy = evaluatePolicy({ regexMatches: sensitiveRegex, fileName: sensitiveImageFile.name, riskAnalysis: sensitiveRisk });
+
+  assert.strictEqual(sensitivePolicy.action, 'block', 'Image containing API key MUST be BLOCKED by Fixed Security Floor');
+  assert.strictEqual(sensitivePolicy.fixedFloorTriggered, true, 'Visual evasion attempt MUST trigger Fixed Security Floor violation');
+  assert.strictEqual(sensitivePolicy.riskScore >= 95, true, 'Sensitive image must receive maximum risk score');
+
+  console.log('  ✓ On-Device WebAssembly Image OCR Governance tests passed.');
+}
+
 async function runAllFileGovernanceTests() {
   console.log('\n--- Running File Upload Governance Unit Tests ---');
   await testFileTextExtraction();
@@ -351,6 +415,7 @@ async function runAllFileGovernanceTests() {
   await testEnvFileInspection();
   testSingleChunkSensitivityPreservation();
   testFailClosedPolicyForImages();
+  await testOnDeviceImageOcrGovernance();
   console.log('--- All File Upload Governance Tests Passed Successfully! ---\n');
 }
 

@@ -207,6 +207,43 @@
           fileResults: [{ action: policyResult.action, riskScore: policyResult.riskScore, fileName }]
         }
       });
+    } else if (message.type === 'ANALYZE_IMAGE_TEXT') {
+      const { extractedText = '', fileName = 'image.png', destinationDomain = 'unknown' } = message.payload || {};
+      const regexMatches = typeof runRegexChecks === 'function' ? runRegexChecks(extractedText) : [];
+      let llmResult = { sensitive: false, category: null, confidence: 0, skipped: true };
+      if (typeof runLLMCheck === 'function' && extractedText) {
+        llmResult = await runLLMCheck(extractedText);
+      }
+      const riskAnalysis = typeof calculateRiskScore === 'function' ? calculateRiskScore({
+        regexMatches, llmResult, userRole: 'engineering', destinationDomain
+      }) : { score: regexMatches.length > 0 ? 85 : 0 };
+      const policyResult = typeof evaluatePolicy === 'function' ? evaluatePolicy({
+        promptText: extractedText, regexMatches, llmResult, riskAnalysis, fileName, customPolicyConfig: { blockThreshold: 75, redactThreshold: 45 }
+      }) : { action: regexMatches.length > 0 ? 'block' : 'allow', riskScore: riskAnalysis.score, reasons: [] };
+      const explanation = typeof generateExplanation === 'function' ? generateExplanation({ ...policyResult, fileName }) : 'Image OCR governance decision applied.';
+
+      if (typeof logAuditRecord === 'function') {
+        await logAuditRecord({
+          timestamp: new Date().toISOString(),
+          promptText: `[IMAGE OCR: ${fileName}] ${extractedText.substring(0, 300)}`,
+          destinationDomain, riskScore: policyResult.riskScore, decision: policyResult.action, explanation,
+          sourceType: 'image_ocr', fileName
+        });
+      }
+
+      callback({
+        success: true,
+        data: {
+          action: policyResult.action,
+          riskScore: policyResult.riskScore,
+          explanation: explanation,
+          reasons: policyResult.reasons || [],
+          regexMatches: regexMatches,
+          llmResult: llmResult,
+          fileName: fileName,
+          sourceType: 'image_ocr'
+        }
+      });
     }
   }
 
@@ -360,9 +397,16 @@
     } catch (_) {}
   }
 
+  function isImageFile(file) {
+    if (!file) return false;
+    const name = (file.name || file.fileName || '').toLowerCase();
+    const type = (file.type || '').toLowerCase();
+    return type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(name);
+  }
+
   /**
    * Processes file attachments through on-device text extraction & governance evaluation.
-   * Supports multi-file parallel ingestion and progressive status feedback.
+   * Supports multi-file parallel ingestion, on-device WebAssembly OCR for images, and progressive status feedback.
    */
   async function processFileGovernance(files, targetElement) {
     if (!files || files.length === 0) return;
@@ -384,28 +428,133 @@
       }
     };
 
+    // Single image attachment fast path using on-device OCR
+    if (files.length === 1 && isImageFile(files[0])) {
+      const file = files[0];
+      showStatusChip(`[Scanning Image for text: ${file.name}...]`);
+
+      let ocrResult = { text: '', confidence: 0 };
+      if (typeof extractTextFromImage === 'function') {
+        try {
+          ocrResult = await extractTextFromImage(file);
+        } catch (ocrErr) {
+          console.warn('[AI Governance] Error during image OCR:', ocrErr);
+        }
+      }
+
+      const extractedText = (ocrResult && ocrResult.text) ? ocrResult.text.trim() : '';
+      const confidence = (ocrResult && typeof ocrResult.confidence === 'number') ? ocrResult.confidence : 0;
+
+      // Purely visual image check: empty text or low confidence (< 30) with no text
+      if (extractedText.length === 0 || (confidence < 30 && extractedText.length === 0)) {
+        console.log(`[AI Governance] Image '${file.name}' is purely visual (no text detected). Permitting attachment.`);
+        unlockScanningState();
+        dispatchOriginalFileAttach(files, targetElement);
+        return;
+      }
+
+      // Text was detected inside the image - dispatch for governance evaluation
+      safeSendMessage(
+        {
+          type: 'ANALYZE_IMAGE_TEXT',
+          payload: {
+            extractedText: extractedText,
+            fileName: file.name,
+            destinationDomain: window.location.hostname
+          }
+        },
+        (response) => {
+          unlockScanningState();
+
+          if (!response || !response.success) {
+            console.error('[AI Governance] Error analyzing image OCR text:', response?.error);
+            dispatchOriginalFileAttach(files, targetElement);
+            return;
+          }
+
+          const data = response.data || {};
+          if (data.action === 'block') {
+            showGovernanceModal({
+              action: 'block',
+              fileName: file.name,
+              riskScore: data.riskScore,
+              explanation: data.explanation,
+              reasons: data.reasons,
+              onDismiss: () => {}
+            });
+          } else if (data.action === 'redact') {
+            showGovernanceModal({
+              action: 'redact',
+              fileName: file.name,
+              riskScore: data.riskScore,
+              explanation: data.explanation,
+              reasons: data.reasons,
+              onRedactAndResend: () => {
+                dispatchOriginalFileAttach(files, targetElement);
+              },
+              onDismiss: () => {}
+            });
+          } else {
+            // Action = 'allow'
+            dispatchOriginalFileAttach(files, targetElement);
+          }
+        }
+      );
+      return;
+    }
+
     const extractedFilesData = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      showStatusChip(`Scanning File ${i + 1} of ${files.length}: ${file.name}...`);
 
-      let extractedData = null;
-      if (typeof extractTextFromFile === 'function') {
-        extractedData = await extractTextFromFile(file);
+      if (isImageFile(file)) {
+        showStatusChip(`[Scanning Image for text: ${file.name}...]`);
+        let ocrResult = { text: '', confidence: 0 };
+        if (typeof extractTextFromImage === 'function') {
+          try {
+            ocrResult = await extractTextFromImage(file);
+          } catch (ocrErr) {
+            console.warn('[AI Governance] Error during image OCR:', ocrErr);
+          }
+        }
+        const extractedText = (ocrResult && ocrResult.text) ? ocrResult.text.trim() : '';
+        const confidence = (ocrResult && typeof ocrResult.confidence === 'number') ? ocrResult.confidence : 0;
+        const isPurelyVisual = extractedText.length === 0 || (confidence < 30 && extractedText.length === 0);
+
+        extractedFilesData.push({
+          file,
+          extractedData: {
+            fileName: file.name,
+            fileType: file.name.split('.').pop().toLowerCase(),
+            fileSize: file.size,
+            text: extractedText,
+            pages: extractedText ? [{ page: 1, text: extractedText }] : [],
+            chunks: extractedText ? [{ chunkIndex: 0, text: extractedText, startChar: 0, endChar: extractedText.length }] : [],
+            unscannable: false,
+            isVisualImage: isPurelyVisual,
+            sourceType: 'image_ocr'
+          }
+        });
       } else {
-        extractedData = {
-          fileName: file.name,
-          fileType: file.name.split('.').pop(),
-          fileSize: file.size,
-          text: '',
-          pages: [],
-          chunks: [],
-          unscannable: true,
-          reason: 'Extraction module unavailable.'
-        };
+        showStatusChip(`Scanning File ${i + 1} of ${files.length}: ${file.name}...`);
+        let extractedData = null;
+        if (typeof extractTextFromFile === 'function') {
+          extractedData = await extractTextFromFile(file);
+        } else {
+          extractedData = {
+            fileName: file.name,
+            fileType: file.name.split('.').pop(),
+            fileSize: file.size,
+            text: '',
+            pages: [],
+            chunks: [],
+            unscannable: true,
+            reason: 'Extraction module unavailable.'
+          };
+        }
+        extractedFilesData.push({ file, extractedData });
       }
-      extractedFilesData.push({ file, extractedData });
     }
 
     safeSendMessage(

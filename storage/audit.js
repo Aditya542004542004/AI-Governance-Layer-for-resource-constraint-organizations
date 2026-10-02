@@ -159,6 +159,7 @@ async function logAuditRecord(record) {
         fileSize: record.fileSize || 0,
         unscannable: Boolean(record.unscannable),
         fixedFloorTriggered: Boolean(record.fixedFloorTriggered),
+        sourceType: record.sourceType || (record.fileName ? 'file_attachment' : 'prompt_submission'),
         latencyMs: record.latencyMs || 0
       };
 

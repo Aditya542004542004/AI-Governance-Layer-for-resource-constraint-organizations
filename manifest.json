@@ -13,6 +13,9 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -22,6 +25,8 @@
         "https://claude.ai/*"
       ],
       "js": [
+        "vendor/tesseract/tesseract.min.js",
+        "lib/ocr.js",
         "lib/pdf-extract.js",
         "lib/docx-extract.js",
         "lib/xlsx-extract.js",
@@ -49,6 +54,8 @@
     {
       "resources": [
         "vendor/*",
+        "vendor/tesseract/*",
+        "vendor/tesseract/lang-data/*",
         "eval/eval-runner.html",
         "eval/eval-runner.js",
         "eval/test-set.json"
