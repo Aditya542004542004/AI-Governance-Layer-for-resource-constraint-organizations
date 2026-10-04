@@ -28,6 +28,15 @@
    * @returns {HTMLElement|null}
    */
   function findPromptInput() {
+    // Check if active element is already the prompt input/composer
+    if (document.activeElement && 
+        (document.activeElement.tagName === 'TEXTAREA' || 
+         document.activeElement.isContentEditable || 
+         document.activeElement.getAttribute('contenteditable') === 'true')) {
+      const parentEditable = document.activeElement.closest('#prompt-textarea') || document.activeElement;
+      return parentEditable;
+    }
+
     const hostname = window.location.hostname;
 
     if (hostname.includes('chatgpt.com') || hostname.includes('openai.com')) {
@@ -54,11 +63,31 @@
     return document.querySelector('textarea') || document.querySelector('div[contenteditable="true"]');
   }
 
+  function isSendButtonElement(target) {
+    if (!target) return false;
+    const button = target.closest('button, [role="button"]');
+    if (!button) return false;
+
+    const dataTestId = (button.getAttribute('data-testid') || '').toLowerCase();
+    const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
+    const btnType = (button.getAttribute('type') || '').toLowerCase();
+
+    return dataTestId.includes('send') ||
+           dataTestId.includes('submit') ||
+           ariaLabel.includes('send') ||
+           ariaLabel.includes('submit') ||
+           btnType === 'submit';
+  }
+
   function findSendButton() {
     const hostname = window.location.hostname;
     if (hostname.includes('chatgpt.com') || hostname.includes('openai.com')) {
       return document.querySelector('button[data-testid="send-button"]') ||
-             document.querySelector('button[data-testid="submit-button"]');
+             document.querySelector('button[data-testid="submit-button"]') ||
+             document.querySelector('button[data-testid*="send"]') ||
+             document.querySelector('button[aria-label*="Send"]') ||
+             document.querySelector('form button[type="submit"]') ||
+             document.querySelector('form button:not([disabled])');
     }
     if (hostname.includes('gemini.google.com')) {
       return document.querySelector('button.send-button') ||
@@ -72,7 +101,7 @@
       return document.querySelector('button[aria-label*="Send"]') ||
              document.querySelector('button[aria-label*="send"]');
     }
-    return document.querySelector('button[type="submit"]');
+    return document.querySelector('button[type="submit"]') || document.querySelector('button[aria-label*="Send"]');
   }
 
   function getInputValue(element) {
@@ -83,22 +112,75 @@
     return element.innerText || element.textContent || '';
   }
 
+  /**
+   * Updates host input value while properly notifying React 16-19 and Lexical/ProseMirror state handlers.
+   */
   function setInputValue(element, newValue) {
-    if (!element) return;
+    if (!element) return false;
+
+    // 1. Textarea or Input (React controlled component synchronization)
     if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
-      element.value = newValue;
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (element.isContentEditable) {
-      element.focus();
-      try {
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, newValue);
-      } catch (_) {
-        element.innerText = newValue;
+      const proto = element.tagName === 'TEXTAREA'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const valueSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+
+      // Reset React's internal value tracker so React's onChange does not reject the update
+      if (element._valueTracker) {
+        try {
+          element._valueTracker.setValue('');
+        } catch (_) {}
       }
-      element.dispatchEvent(new Event('input', { bubbles: true }));
+
+      if (valueSetter) {
+        valueSetter.call(element, newValue);
+      } else {
+        element.value = newValue;
+      }
+
+      element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      return true;
     }
+
+    // 2. Contenteditable (ChatGPT Lexical / ProseMirror, Claude, Gemini)
+    if (element.isContentEditable || element.getAttribute('contenteditable') === 'true') {
+      element.focus();
+
+      let replaced = false;
+      try {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        selection.removeAllRanges();
+        selection.addRange(range);
+
+        replaced = document.execCommand('insertText', false, newValue);
+      } catch (_) {}
+
+      if (!replaced) {
+        try {
+          element.innerHTML = `<p>${escapeHtml(newValue)}</p>`;
+        } catch (_) {
+          element.textContent = newValue;
+        }
+      }
+
+      try {
+        element.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          composed: true,
+          inputType: 'insertText',
+          data: newValue
+        }));
+      } catch (_) {}
+
+      element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -252,7 +334,10 @@
    */
   function attachInterceptors() {
     document.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('pointerdown', handleSendButtonPrePointer, true);
+    document.addEventListener('mousedown', handleSendButtonPrePointer, true);
     document.addEventListener('click', handleClick, true);
+    document.addEventListener('submit', handleFormSubmit, true);
     document.addEventListener('change', handleFileInputChange, true);
     document.addEventListener('dragover', handleDragOver, true);
     document.addEventListener('drop', handleFileDrop, true);
@@ -270,8 +355,17 @@
       }
 
       if (!isBypassingInterception) {
-        const inputEl = findPromptInput();
-        if (inputEl && (event.target === inputEl || inputEl.contains(event.target))) {
+        let inputEl = findPromptInput();
+        const isTargetEditable = event.target === inputEl || 
+                                 (inputEl && inputEl.contains(event.target)) ||
+                                 event.target.tagName === 'TEXTAREA' || 
+                                 event.target.isContentEditable ||
+                                 Boolean(event.target.closest('#prompt-textarea'));
+
+        if (isTargetEditable) {
+          if (!inputEl || !inputEl.contains(event.target)) {
+            inputEl = event.target.closest('#prompt-textarea') || event.target;
+          }
           const text = getInputValue(inputEl);
           if (text.trim().length > 0) {
             event.preventDefault();
@@ -284,20 +378,14 @@
     }
   }
 
-  function handleClick(event) {
-    const target = event.target;
-    const button = target.closest('button, [role="button"]');
-    if (!button) return;
+  /**
+   * Pre-emptively halts pointerdown/mousedown on the send button so host apps (ChatGPT, Claude)
+   * cannot start or dispatch prompt requests before click interception evaluates governance.
+   */
+  function handleSendButtonPrePointer(event) {
+    if (isBypassingInterception) return;
 
-    const dataTestId = (button.getAttribute('data-testid') || '').toLowerCase();
-    const ariaLabel = (button.getAttribute('aria-label') || '').toLowerCase();
-    
-    const isSendButton = dataTestId.includes('send') ||
-                         dataTestId.includes('submit') ||
-                         ariaLabel.includes('send') ||
-                         ariaLabel.includes('submit');
-
-    if (isSendButton) {
+    if (isSendButtonElement(event.target)) {
       if (isScanningActive) {
         event.preventDefault();
         event.stopPropagation();
@@ -306,17 +394,57 @@
         return;
       }
 
-      if (!isBypassingInterception) {
-        const inputEl = findPromptInput();
-        if (inputEl) {
-          const text = getInputValue(inputEl);
-          if (text.trim().length > 0) {
-            event.preventDefault();
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            processPromptSubmission(text, inputEl);
-          }
+      // Stop pointerdown/mousedown from triggering early network dispatch in React/Tailwind/Radix
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function handleClick(event) {
+    if (isBypassingInterception) return;
+
+    if (isSendButtonElement(event.target)) {
+      if (isScanningActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        showStatusChip('Please wait: File security inspection in progress...');
+        return;
+      }
+
+      const inputEl = findPromptInput();
+      if (inputEl) {
+        const text = getInputValue(inputEl);
+        if (text.trim().length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          processPromptSubmission(text, inputEl);
         }
+      }
+    }
+  }
+
+  function handleFormSubmit(event) {
+    if (isBypassingInterception) return;
+
+    if (isScanningActive) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      showStatusChip('Please wait: File security inspection in progress...');
+      return;
+    }
+
+    const inputEl = findPromptInput();
+    if (inputEl) {
+      const text = getInputValue(inputEl);
+      if (text.trim().length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        processPromptSubmission(text, inputEl);
       }
     }
   }
@@ -741,9 +869,12 @@
             reasons: data.reasons,
             regexMatches: data.regexMatches,
             onRedactAndResend: () => {
-              const redactedText = redactSensitiveText(promptText, data.regexMatches);
-              setInputValue(inputEl, redactedText);
-              dispatchOriginalSubmission(inputEl);
+              const textToSubmit = data.redactedText || redactSensitiveText(promptText, data.regexMatches);
+              setInputValue(inputEl, textToSubmit);
+              // Allow React 18 / Lexical 120ms to process state reconciliation and update composer state
+              setTimeout(() => {
+                dispatchOriginalSubmission(inputEl);
+              }, 120);
             },
             onDismiss: () => {
               // Simply focus input area for user to edit manually. Do NOT submit.
@@ -775,7 +906,7 @@
     const sendBtn = findSendButton();
     if (sendBtn) {
       sendBtn.click();
-    } else {
+    } else if (inputEl) {
       const enterEvent = new KeyboardEvent('keydown', {
         key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
         bubbles: true, cancelable: true
@@ -785,7 +916,7 @@
 
     setTimeout(() => {
       isBypassingInterception = false;
-    }, 1000);
+    }, 1200);
   }
 
   // ==========================================
