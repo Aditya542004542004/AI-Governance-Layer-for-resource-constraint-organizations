@@ -59,6 +59,33 @@ function testRegexCategories() {
   const passwordResult = runRegexChecks('my pin is 2901');
   assert.strictEqual(passwordResult.some(m => m.category === 'pin_passcode'), true, 'Should detect explicit PIN assignment pattern');
 
+  // 6. Cryptographic Private Key (PEM)
+  const pkResult = runRegexChecks('-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA05...\n-----END RSA PRIVATE KEY-----');
+  assert.strictEqual(pkResult.some(m => m.category === 'private_key'), true, 'Should detect PEM RSA private key');
+
+  // 7. JSON Web Token (JWT)
+  const jwtSample = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+  const jwtResult = runRegexChecks(jwtSample);
+  assert.strictEqual(jwtResult.some(m => m.category === 'jwt_token'), true, 'Should detect valid JWT token pattern');
+
+  // 8. Card Security Code (CVV/CVC)
+  const cvvResult = runRegexChecks('Card details: exp 12/28, cvv: 842');
+  assert.strictEqual(cvvResult.some(m => m.category === 'cvv_code'), true, 'Should detect CVV code pattern');
+
+  // 9. Indian PAN Card
+  const validPanResult = runRegexChecks('Tax ID PAN is ABCPE1234F for individual filing.');
+  assert.strictEqual(validPanResult.some(m => m.category === 'pan'), true, 'Should detect valid Indian PAN card');
+
+  const invalidPanResult = runRegexChecks('Invalid PAN ABCZE1234F with Z entity type.');
+  assert.strictEqual(invalidPanResult.some(m => m.category === 'pan'), false, 'Invalid PAN entity type must not match');
+
+  // 10. International Bank Account Number (IBAN)
+  const validIbanResult = runRegexChecks('Wire transfer funds to GB82WEST12345698765432 account.');
+  assert.strictEqual(validIbanResult.some(m => m.category === 'iban'), true, 'Should detect valid IBAN with passing MOD-97');
+
+  const invalidIbanResult = runRegexChecks('Invalid checksum account GB82WEST12345698765433 cannot pass.');
+  assert.strictEqual(invalidIbanResult.some(m => m.category === 'iban'), false, 'Invalid checksum IBAN must not match');
+
   console.log('  ✓ Regex Category pattern tests passed.');
 }
 

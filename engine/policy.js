@@ -103,7 +103,37 @@ function evaluatePolicy({
     });
   }
 
-  // Fixed Floor Rule C: PIN / Passcodes are ALWAYS blocked
+  // Fixed Floor Rule C: Cryptographic Private Keys (PEM/SSH/RSA) are ALWAYS blocked
+  const privateKeyHits = regexMatches.filter(m => m.category === 'private_key');
+  if (privateKeyHits.length > 0) {
+    reasons.push({
+      type: 'fixed_floor_violation',
+      category: 'private_key',
+      description: 'Contains Cryptographic Private Key / PEM block (Fixed Security Floor rule)'
+    });
+  }
+
+  // Fixed Floor Rule D: JSON Web Tokens (JWT) / Bearer Credentials are ALWAYS blocked
+  const jwtHits = regexMatches.filter(m => m.category === 'jwt_token');
+  if (jwtHits.length > 0) {
+    reasons.push({
+      type: 'fixed_floor_violation',
+      category: 'jwt_token',
+      description: 'Contains JSON Web Token / Bearer Credential (Fixed Security Floor rule)'
+    });
+  }
+
+  // Fixed Floor Rule E: Card Security Codes (CVV/CVC) are ALWAYS blocked
+  const cvvHits = regexMatches.filter(m => m.category === 'cvv_code');
+  if (cvvHits.length > 0) {
+    reasons.push({
+      type: 'fixed_floor_violation',
+      category: 'cvv_code',
+      description: 'Contains Card Verification Value (CVV/CVC) (Fixed Security Floor rule)'
+    });
+  }
+
+  // Fixed Floor Rule F: PIN / Passcodes are ALWAYS blocked
   const pinHits = regexMatches.filter(m => m.category === 'pin_passcode');
   if (pinHits.length > 0) {
     reasons.push({
@@ -113,7 +143,7 @@ function evaluatePolicy({
     });
   }
 
-  // Fixed Floor Rule D: National Identity / SSNs are ALWAYS blocked
+  // Fixed Floor Rule G: National Identity / SSNs are ALWAYS blocked
   const nationalIdHits = regexMatches.filter(m => m.category === 'national_id');
   if (nationalIdHits.length > 0) {
     reasons.push({
@@ -123,7 +153,7 @@ function evaluatePolicy({
     });
   }
 
-  // Fixed Floor Rule E: Database Connection URIs are ALWAYS blocked
+  // Fixed Floor Rule H: Database Connection URIs are ALWAYS blocked
   const dbUriHits = regexMatches.filter(m => m.category === 'database_url');
   if (dbUriHits.length > 0) {
     reasons.push({
@@ -133,7 +163,7 @@ function evaluatePolicy({
     });
   }
 
-  // Fixed Floor Rule C: Unscannable / Image / Binary File (Fail-Closed Security Floor)
+  // Fixed Floor Rule I: Unscannable / Image / Binary File (Fail-Closed Security Floor)
   if (unscannable) {
     reasons.push({
       type: 'fixed_floor_violation',

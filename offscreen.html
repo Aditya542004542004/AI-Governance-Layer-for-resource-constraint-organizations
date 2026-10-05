@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AI Governance Offscreen OCR Engine</title>
+</head>
+<body>
+  <!-- 
+    CSP-Isolated Extension Offscreen Document.
+    Runs Tesseract.js WebAssembly and Web Worker 100% locally on-device.
+    Governed by extension_pages CSP (immune to host page restrictions).
+  -->
+  <script src="vendor/tesseract/tesseract.min.js"></script>
+  <script src="lib/ocr.js"></script>
+  <script src="offscreen.js"></script>
+</body>
+</html>

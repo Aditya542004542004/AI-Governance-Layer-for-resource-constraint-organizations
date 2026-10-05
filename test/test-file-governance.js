@@ -427,7 +427,137 @@ async function testOnDeviceImageOcrGovernance() {
   assert.strictEqual(paperPolicy.action, 'redact', 'Research paper with researcher PII/emails MUST trigger REDACT warning modal');
   assert.strictEqual(paperPolicy.riskScore >= 70, true, 'Policy evaluated risk score must be >= 70/100');
 
+  // 5. On-Device Image Redaction & Bounding Box Blackout Test:
+  // Verifies that redactImageFile and calculateRedactionBoxes properly resolve coordinates
+  const { calculateRedactionBoxes, redactImageFile } = require('../lib/ocr.js');
+  const mockImageWords = [
+    { text: 'Paper', bbox: { x0: 20, y0: 30, x1: 60, y1: 45 } },
+    { text: 'aditya.sharma@vit.ac.in', bbox: { x0: 100, y0: 50, x1: 280, y1: 68 } },
+    { text: 'rkumar@vit.edu', bbox: { x0: 300, y0: 50, x1: 420, y1: 68 } }
+  ];
+  const detectedSensitiveMatches = [
+    { category: 'email', match: 'aditya.sharma@vit.ac.in' },
+    { category: 'email', match: 'rkumar@vit.edu' }
+  ];
+  const boxes = calculateRedactionBoxes(detectedSensitiveMatches, { words: mockImageWords });
+  assert.strictEqual(boxes.length, 2, 'Must calculate bounding boxes for both sensitive emails');
+  assert.strictEqual(boxes[0].x0, 100, 'First box coordinates must match first email word');
+  assert.strictEqual(boxes[1].x0, 300, 'Second box coordinates must match second email word');
+
+  const redactedResult = await redactImageFile(
+    { name: 'paper_authors.png', type: 'image/png', size: 2048 },
+    detectedSensitiveMatches,
+    { words: mockImageWords }
+  );
+  assert.strictEqual(redactedResult.name, 'redacted_paper_authors.png', 'Redacted image must receive sanitized filename');
+  assert.strictEqual(redactedResult.isRedactedImage, true, 'Image must be flagged as redacted');
+  assert.strictEqual(redactedResult.redactedBoxesCount, 2, 'Both sensitive boxes must be covered by blackout');
+
   console.log('  ✓ On-Device WebAssembly Image OCR Governance tests passed.');
+}
+
+const { handleAnalyzeImageFile } = require('../background.js');
+
+async function testImageFileGovernancePipelineWithLLMOff() {
+  console.log('Testing Image File Governance Pipeline with LLM OFF & Fail-Closed Protection...');
+
+  const prevChrome = global.chrome;
+  global.chrome = {
+    runtime: {
+      getURL: (path) => `chrome-extension://mock-extension-id/${path}`,
+      onInstalled: { addListener: () => {} },
+      onMessage: { addListener: () => {} }
+    },
+    storage: {
+      local: {
+        get: (defs, cb) => cb({ ...defs, enableLLM: false, enableRegex: true }),
+        set: (data, cb) => cb && cb()
+      }
+    }
+  };
+
+  try {
+    // 1. Purely visual image -> ALLOW, score 0
+    const visualMockImage = {
+      name: 'diagram.png',
+      type: 'image/png',
+      __mockOcrResult: { text: '', confidence: 0, words: [], lines: [] }
+    };
+    const visualRes = await handleAnalyzeImageFile({
+      imageData: visualMockImage,
+      fileName: 'diagram.png',
+      destinationDomain: 'gemini.google.com'
+    });
+    assert.strictEqual(visualRes.action, 'allow', 'Purely visual image must be ALLOWED');
+    assert.strictEqual(visualRes.riskScore, 0, 'Risk score for visual image must be 0');
+    assert.strictEqual(visualRes.isVisualImage, true, 'Image must be flagged as purely visual');
+
+    // 2. Research Paper image containing emails with LLM OFF -> REDACT, score >= 70
+    const paperMockImage = {
+      name: 'research_paper_vit.png',
+      type: 'image/png',
+      __mockOcrResult: {
+        text: 'IEEE Transactions on Artificial Intelligence\nAuthors: Aditya Sharma, Dr. Rajesh Kumar\nAffiliation: VIT University\nContact: student@vit.edu, prof@vit.edu',
+        confidence: 94.0,
+        words: [
+          { text: 'student@vit.edu', bbox: { x0: 50, y0: 80, x1: 200, y1: 100 } },
+          { text: 'prof@vit.edu', bbox: { x0: 220, y0: 80, x1: 350, y1: 100 } }
+        ],
+        lines: []
+      }
+    };
+    const paperRes = await handleAnalyzeImageFile({
+      imageData: paperMockImage,
+      fileName: 'research_paper_vit.png',
+      destinationDomain: 'gemini.google.com'
+    });
+    assert.strictEqual(paperRes.action, 'redact', 'Paper image with emails MUST trigger REDACT even with LLM OFF');
+    assert.strictEqual(paperRes.riskScore >= 70, true, 'Risk score must be >= 70 with LLM OFF');
+    assert.strictEqual(paperRes.redactionBoxes.length, 2, 'Redaction bounding boxes must be calculated for both emails');
+
+    // 3. Sensitive image containing API key with LLM OFF -> BLOCK, score >= 95
+    const apiKeyMockImage = {
+      name: 'api_key_screenshot.png',
+      type: 'image/png',
+      __mockOcrResult: {
+        text: 'Production API Key: sk-proj-123456789012345678901234',
+        confidence: 96.0,
+        words: [
+          { text: 'sk-proj-123456789012345678901234', bbox: { x0: 10, y0: 20, x1: 300, y1: 40 } }
+        ],
+        lines: []
+      }
+    };
+    const apiKeyRes = await handleAnalyzeImageFile({
+      imageData: apiKeyMockImage,
+      fileName: 'api_key_screenshot.png',
+      destinationDomain: 'gemini.google.com'
+    });
+    assert.strictEqual(apiKeyRes.action, 'block', 'API key image MUST trigger BLOCK even with LLM OFF');
+    assert.strictEqual(apiKeyRes.fixedFloorTriggered, true, 'Fixed Security Floor must be triggered');
+    assert.strictEqual(apiKeyRes.riskScore >= 95, true, 'Risk score must be >= 95');
+
+    // 4. OCR failure / crash -> Fail-Closed BLOCKED (Never fail-open!)
+    const errorMockImage = {
+      name: 'corrupted_or_csp_blocked.png',
+      type: 'image/png',
+      get __mockOcrResult() {
+        throw new Error('Host CSP blocked Web Worker instantiation');
+      }
+    };
+    const errorRes = await handleAnalyzeImageFile({
+      imageData: errorMockImage,
+      fileName: 'corrupted_or_csp_blocked.png',
+      destinationDomain: 'gemini.google.com'
+    });
+    assert.strictEqual(errorRes.action, 'block', 'OCR failure MUST trigger Fail-Closed BLOCK');
+    assert.strictEqual(errorRes.unscannable, true, 'File must be marked unscannable');
+    assert.strictEqual(errorRes.fixedFloorTriggered, true, 'Fail-Closed Fixed Security Floor must be triggered');
+
+    console.log('  ✓ Image File Governance Pipeline with LLM OFF & Fail-Closed Protection tests passed.');
+  } finally {
+    global.chrome = prevChrome;
+  }
 }
 
 async function runAllFileGovernanceTests() {
@@ -440,6 +570,7 @@ async function runAllFileGovernanceTests() {
   testSingleChunkSensitivityPreservation();
   testFailClosedPolicyForImages();
   await testOnDeviceImageOcrGovernance();
+  await testImageFileGovernancePipelineWithLLMOff();
   console.log('--- All File Upload Governance Tests Passed Successfully! ---\n');
 }
 

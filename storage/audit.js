@@ -16,6 +16,9 @@ const CACHE_STORE_NAME = 'fileHashCache';
  * @returns {Promise<IDBDatabase>}
  */
 function initAuditDB() {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.reject(new Error('IndexedDB is not supported or defined in this environment.'));
+  }
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -138,6 +141,9 @@ async function saveFileHashCache(cacheEntry) {
  * @returns {Promise<number>} Inserted record ID
  */
 async function logAuditRecord(record) {
+  if (typeof indexedDB === 'undefined') {
+    return null;
+  }
   try {
     const db = await initAuditDB();
     return new Promise((resolve, reject) => {

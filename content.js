@@ -556,38 +556,44 @@
       }
     };
 
-    // Single image attachment fast path using on-device OCR
+    const readFileAsDataUrl = (file) => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Failed to read image data'));
+        reader.readAsDataURL(file);
+      });
+    };
+
+    // Single image attachment fast path using CSP-isolated Offscreen OCR
     if (files.length === 1 && isImageFile(files[0])) {
       const file = files[0];
       showStatusChip(`[Scanning Image for text: ${file.name}...]`);
 
-      let ocrResult = { text: '', confidence: 0 };
-      if (typeof extractTextFromImage === 'function') {
-        try {
-          ocrResult = await extractTextFromImage(file);
-        } catch (ocrErr) {
-          console.warn('[AI Governance] Error during image OCR:', ocrErr);
-        }
-      }
-
-      const extractedText = (ocrResult && ocrResult.text) ? ocrResult.text.trim() : '';
-      const confidence = (ocrResult && typeof ocrResult.confidence === 'number') ? ocrResult.confidence : 0;
-
-      // Purely visual image check: empty text or low confidence (< 30) with no text
-      if (extractedText.length === 0 || (confidence < 30 && extractedText.length === 0)) {
-        console.log(`[AI Governance] Image '${file.name}' is purely visual (no text detected). Permitting attachment.`);
+      let dataUrl = null;
+      try {
+        dataUrl = await readFileAsDataUrl(file);
+      } catch (readErr) {
+        console.error('[AI Governance] Error reading image file:', readErr);
         unlockScanningState();
-        dispatchOriginalFileAttach(files, targetElement, eventType);
+        showGovernanceModal({
+          action: 'block',
+          fileName: file.name,
+          riskScore: 90,
+          explanation: 'Image file could not be read for security screening.',
+          reasons: ['File read error during pre-submission screening.'],
+          onDismiss: () => {}
+        });
         return;
       }
 
-      // Text was detected inside the image - dispatch for governance evaluation
       safeSendMessage(
         {
-          type: 'ANALYZE_IMAGE_TEXT',
+          type: 'ANALYZE_IMAGE_FILE',
           payload: {
-            extractedText: extractedText,
+            imageData: dataUrl,
             fileName: file.name,
+            fileSize: file.size,
             destinationDomain: window.location.hostname
           }
         },
@@ -595,12 +601,27 @@
           unlockScanningState();
 
           if (!response || !response.success) {
-            console.error('[AI Governance] Error analyzing image OCR text:', response?.error);
-            dispatchOriginalFileAttach(files, targetElement, eventType);
+            console.error('[AI Governance] Error analyzing image file:', response?.error);
+            showGovernanceModal({
+              action: 'block',
+              fileName: file.name,
+              riskScore: 90,
+              explanation: 'Security inspection for image file encountered an error. Enforcing Fail-Closed security.',
+              reasons: [response?.error || 'Security inspection service communication error.'],
+              onDismiss: () => {}
+            });
             return;
           }
 
           const data = response.data || {};
+
+          // Purely visual image (genuinely no text detected by OCR)
+          if (data.isVisualImage || (data.action === 'allow' && (!data.reasons || data.reasons.length === 0))) {
+            console.log(`[AI Governance] Image '${file.name}' is purely visual (no sensitive text). Permitting attachment.`);
+            dispatchOriginalFileAttach(files, targetElement, eventType);
+            return;
+          }
+
           if (data.action === 'block') {
             showGovernanceModal({
               action: 'block',
@@ -617,8 +638,18 @@
               riskScore: data.riskScore,
               explanation: data.explanation,
               reasons: data.reasons,
-              onRedactAndResend: () => {
-                dispatchOriginalFileAttach(files, targetElement, eventType);
+              onRedactAndResend: async () => {
+                showStatusChip(`[Blacking out sensitive text in ${file.name}...]`);
+                let fileToAttach = file;
+                if (typeof redactImageFile === 'function') {
+                  try {
+                    fileToAttach = await redactImageFile(file, data.regexMatches || [], data.ocrResult || {});
+                  } catch (redactErr) {
+                    console.warn('[AI Governance] Error performing on-device canvas image redaction:', redactErr);
+                  }
+                }
+                removeStatusChip();
+                dispatchOriginalFileAttach([fileToAttach], targetElement, eventType);
               },
               onDismiss: () => {}
             });
@@ -637,33 +668,66 @@
       const file = files[i];
 
       if (isImageFile(file)) {
-        showStatusChip(`[Scanning Image for text: ${file.name}...]`);
-        let ocrResult = { text: '', confidence: 0 };
-        if (typeof extractTextFromImage === 'function') {
-          try {
-            ocrResult = await extractTextFromImage(file);
-          } catch (ocrErr) {
-            console.warn('[AI Governance] Error during image OCR:', ocrErr);
-          }
+        showStatusChip(`Scanning Image ${i + 1} of ${files.length}: ${file.name}...`);
+        let ocrResult = null;
+        let ocrFailed = false;
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          ocrResult = await new Promise((resolve, reject) => {
+            safeSendMessage(
+              {
+                type: 'PERFORM_IMAGE_OCR',
+                payload: { imageData: dataUrl, fileName: file.name }
+              },
+              (res) => {
+                if (res && res.success && res.data) {
+                  resolve(res.data);
+                } else {
+                  reject(new Error(res?.error || 'OCR failed'));
+                }
+              }
+            );
+          });
+        } catch (err) {
+          console.warn('[AI Governance] Error performing offscreen OCR for file in batch:', err);
+          ocrFailed = true;
         }
-        const extractedText = (ocrResult && ocrResult.text) ? ocrResult.text.trim() : '';
-        const confidence = (ocrResult && typeof ocrResult.confidence === 'number') ? ocrResult.confidence : 0;
-        const isPurelyVisual = extractedText.length === 0 || (confidence < 30 && extractedText.length === 0);
 
-        extractedFilesData.push({
-          file,
-          extractedData: {
-            fileName: file.name,
-            fileType: file.name.split('.').pop().toLowerCase(),
-            fileSize: file.size,
-            text: extractedText,
-            pages: extractedText ? [{ page: 1, text: extractedText }] : [],
-            chunks: extractedText ? [{ chunkIndex: 0, text: extractedText, startChar: 0, endChar: extractedText.length }] : [],
-            unscannable: false,
-            isVisualImage: isPurelyVisual,
-            sourceType: 'image_ocr'
-          }
-        });
+        if (ocrFailed || !ocrResult) {
+          extractedFilesData.push({
+            file,
+            extractedData: {
+              fileName: file.name,
+              fileType: file.name.split('.').pop().toLowerCase(),
+              fileSize: file.size,
+              text: '',
+              chunks: [],
+              unscannable: true,
+              reason: 'Image OCR processing failed.',
+              sourceType: 'image_ocr'
+            }
+          });
+        } else {
+          const extractedText = (ocrResult.text || '').trim();
+          const confidence = typeof ocrResult.confidence === 'number' ? ocrResult.confidence : 0;
+          const isPurelyVisual = extractedText.length === 0 || (confidence < 30 && extractedText.length === 0);
+
+          extractedFilesData.push({
+            file,
+            extractedData: {
+              fileName: file.name,
+              fileType: file.name.split('.').pop().toLowerCase(),
+              fileSize: file.size,
+              text: extractedText,
+              pages: extractedText ? [{ page: 1, text: extractedText }] : [],
+              chunks: extractedText ? [{ chunkIndex: 0, text: extractedText, startChar: 0, endChar: extractedText.length }] : [],
+              unscannable: false,
+              isVisualImage: isPurelyVisual,
+              ocrResult: ocrResult,
+              sourceType: 'image_ocr'
+            }
+          });
+        }
       } else {
         showStatusChip(`Scanning File ${i + 1} of ${files.length}: ${file.name}...`);
         let extractedData = null;
@@ -724,8 +788,25 @@
             riskScore: data.riskScore || redactFile.riskScore,
             explanation: data.explanation || redactFile.explanation,
             reasons: data.reasons || redactFile.reasons,
-            onRedactAndResend: () => {
-              dispatchOriginalFileAttach(files, targetElement, eventType);
+            onRedactAndResend: async () => {
+              const processedFiles = [];
+              for (const fItem of extractedFilesData) {
+                const f = fItem.file;
+                const extData = fItem.extractedData || {};
+                if (isImageFile(f) && extData.sourceType === 'image_ocr' && typeof redactImageFile === 'function') {
+                  showStatusChip(`[Blacking out sensitive text in ${f.name}...]`);
+                  try {
+                    const sanitized = await redactImageFile(f, data.regexMatches || [], extData.ocrResult || {});
+                    processedFiles.push(sanitized);
+                  } catch (_) {
+                    processedFiles.push(f);
+                  }
+                } else {
+                  processedFiles.push(f);
+                }
+              }
+              removeStatusChip();
+              dispatchOriginalFileAttach(processedFiles, targetElement, eventType);
             },
             onDismiss: () => {}
           });
@@ -969,10 +1050,11 @@
     // Dynamic button labels based on action type
     let primaryButtonText = 'Remove Flagged Data & Send';
     let secondaryButtonText = 'Understand & Edit Prompt';
+    const isImageAttachment = fileName && /\.(png|jpe?g|webp)$/i.test(fileName);
 
     if (fileName) {
-      primaryButtonText = 'Proceed with Upload';
-      secondaryButtonText = isBlock ? 'Understand & Cancel Attachment' : 'Cancel & Edit Manually';
+      primaryButtonText = isImageAttachment ? 'Blackout Sensitive Data & Upload' : 'Proceed with Upload';
+      secondaryButtonText = isBlock ? 'Understand & Cancel Attachment' : 'Cancel Attachment';
     } else if (!isBlock) {
       secondaryButtonText = 'Keep & Edit Manually';
     }
@@ -987,6 +1069,11 @@
         </div>
         <div class="ai-gov-modal-body">
           ${fileName ? `<div style="font-size: 13px; font-weight: 600; color: #38bdf8; margin-bottom: 12px;">File Attachment: ${escapeHtml(fileName)}</div>` : ''}
+          ${isImageAttachment && !isBlock ? `
+            <div style="background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8; padding: 8px 12px; border-radius: 4px; font-size: 12px; color: #bae6fd; margin-bottom: 12px;">
+              🔒 <strong>On-Device Canvas Redaction:</strong> Sensitive text will be physically blacked out on the image pixels before uploading. Surrounding diagrams, charts, and layout remain intact.
+            </div>
+          ` : ''}
           <div class="ai-gov-risk-meter">
             <span>Evaluated Risk Score</span>
             <span class="ai-gov-risk-score ${riskScore >= 75 ? 'high' : 'medium'}">${riskScore} / 100</span>

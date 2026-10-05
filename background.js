@@ -55,17 +55,32 @@ const DEFAULT_SETTINGS = {
   enableMetadataSync: false
 };
 
+/**
+ * Safely fetches user settings from chrome.storage.local or returns default configuration.
+ * @returns {Promise<Object>}
+ */
+async function getExtensionSettings() {
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && typeof chrome.storage.local.get === 'function') {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data || DEFAULT_SETTINGS));
+    });
+  }
+  return { ...DEFAULT_SETTINGS };
+}
+
 // Initialize settings on extension install
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
-    chrome.storage.local.set(stored, () => {
-      console.log('[AI Governance] Service worker installed & policy storage initialized.');
-      if (typeof clearFileHashCache === 'function') {
-        clearFileHashCache().catch(() => {});
-      }
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.get(DEFAULT_SETTINGS, (stored) => {
+      chrome.storage.local.set(stored, () => {
+        console.log('[AI Governance] Service worker installed & policy storage initialized.');
+        if (typeof clearFileHashCache === 'function') {
+          clearFileHashCache().catch(() => {});
+        }
+      });
     });
   });
-});
+}
 
 /**
  * Computes SHA-256 hash using native Web Crypto API.
@@ -101,10 +116,11 @@ async function computeSHA256Hash(textOrBytes) {
 }
 
 // Central runtime message listener
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || !message.type) {
-    return false;
-  }
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || !message.type) {
+      return false;
+    }
 
   if (message.type === 'ANALYZE_PROMPT') {
     handleAnalyzePrompt(message.payload)
@@ -146,6 +162,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'PERFORM_IMAGE_OCR') {
+    runOffscreenOcr(message.payload?.imageData, message.payload?.options)
+      .then(result => sendResponse({ success: true, data: result }))
+      .catch(err => {
+        console.error('[AI Governance] Error during PERFORM_IMAGE_OCR:', err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  if (message.type === 'ANALYZE_IMAGE_FILE') {
+    handleAnalyzeImageFile(message.payload)
+      .then(response => sendResponse({ success: true, data: response }))
+      .catch(err => {
+        console.error('[AI Governance] Error processing image file analysis:', err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
   if (message.type === 'GET_AUDIT_LOGS') {
     getAuditRecords(message.limit || 100)
       .then(logs => sendResponse({ success: true, data: logs }))
@@ -170,7 +206,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     return true;
   }
-});
+  });
+}
 
 /**
  * Handles end-to-end evaluation pipeline for an intercepted prompt text.
@@ -179,10 +216,8 @@ async function handleAnalyzePrompt(payload) {
   const { promptText, destinationDomain = 'unknown' } = payload;
   const startTime = performance.now();
 
-  // Retrieve user settings from chrome.storage.local
-  const settings = await new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
-  });
+  // Retrieve user settings safely
+  const settings = await getExtensionSettings();
 
   // 1. Run Regex Checks
   let regexMatches = [];
@@ -273,9 +308,7 @@ async function handleAnalyzeImageText(payload) {
   const { extractedText = '', fileName = 'image.png', destinationDomain = 'unknown' } = payload || {};
   const startTime = performance.now();
 
-  const settings = await new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
-  });
+  const settings = await getExtensionSettings();
 
   // Pre-clean OCR recognition artifacts (spaces in emails, broken symbols)
   const cleanedText = (typeof cleanOcrText === 'function') 
@@ -370,6 +403,155 @@ async function handleAnalyzeImageText(payload) {
   };
 }
 
+let creatingOffscreenPromise = null;
+
+/**
+ * Ensures an Offscreen Document is active for running Web Workers / WebAssembly OCR
+ * in a CSP-isolated environment unaffected by host page restrictions.
+ */
+async function setupOffscreenDocument(path = 'offscreen.html') {
+  if (typeof chrome === 'undefined' || !chrome.offscreen || typeof chrome.offscreen.createDocument !== 'function') {
+    return;
+  }
+  const offscreenUrl = chrome.runtime.getURL(path);
+
+  if (typeof chrome.offscreen.hasDocument === 'function') {
+    const hasDoc = await chrome.offscreen.hasDocument();
+    if (hasDoc) return;
+  } else if (chrome.runtime && typeof chrome.runtime.getContexts === 'function') {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [offscreenUrl]
+    });
+    if (contexts.length > 0) return;
+  }
+
+  if (creatingOffscreenPromise) {
+    await creatingOffscreenPromise;
+    return;
+  }
+
+  creatingOffscreenPromise = chrome.offscreen.createDocument({
+    url: path,
+    reasons: ['DOM_PARSER', 'BLOBS'],
+    justification: 'Perform on-device Tesseract OCR in a CSP-isolated extension environment'
+  }).catch((err) => {
+    if (!err.message?.includes('Only a single offscreen document may be created')) {
+      throw err;
+    }
+  }).finally(() => {
+    creatingOffscreenPromise = null;
+  });
+
+  await creatingOffscreenPromise;
+}
+
+/**
+ * Executes OCR on image data via the CSP-isolated Offscreen Document.
+ * @param {string|Blob|ArrayBuffer} imageData 
+ * @param {Object} options 
+ * @returns {Promise<{text: string, confidence: number, words: Array, lines: Array}>}
+ */
+async function runOffscreenOcr(imageData, options = {}) {
+  if (typeof chrome !== 'undefined' && chrome.offscreen && typeof chrome.offscreen.createDocument === 'function') {
+    await setupOffscreenDocument('offscreen.html');
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        type: 'OFFSCREEN_PERFORM_OCR',
+        payload: { imageData, options }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          return reject(new Error(chrome.runtime.lastError.message));
+        }
+        if (!response || !response.success) {
+          return reject(new Error(response?.error || 'OCR failed in offscreen document'));
+        }
+        resolve(response.data);
+      });
+    });
+  }
+
+  if (typeof extractTextFromImage === 'function') {
+    return await extractTextFromImage(imageData, options);
+  }
+
+  throw new Error('TESSERACT_OCR_UNAVAILABLE: No OCR engine accessible in current context.');
+}
+
+/**
+ * Handles end-to-end evaluation pipeline for an image attachment file.
+ * Performs OCR via CSP-isolated Offscreen Document, evaluates regex & policy,
+ * calculates bounding boxes, logs to audit storage, and enforces Fail-Closed policy on errors.
+ */
+async function handleAnalyzeImageFile(payload) {
+  const { imageData, fileName = 'image.png', fileSize = 0, destinationDomain = 'unknown' } = payload || {};
+  const startTime = performance.now();
+
+  let ocrResult = null;
+  let ocrError = null;
+
+  try {
+    ocrResult = await runOffscreenOcr(imageData);
+  } catch (err) {
+    ocrError = err;
+    console.error(`[AI Governance] OCR extraction failed for '${fileName}':`, err);
+  }
+
+  // CRITICAL FAIL-CLOSED ENFORCEMENT:
+  // If OCR failed or crashed, NEVER treat image as visual! Enforce Fail-Closed policy.
+  if (ocrError || !ocrResult) {
+    const errorReason = `Image OCR failed (${ocrError ? ocrError.message : 'Unknown OCR failure'})`;
+    return handleAnalyzeFile({
+      extractedData: {
+        fileName,
+        fileType: fileName.split('.').pop() || 'png',
+        fileSize,
+        text: '',
+        chunks: [],
+        unscannable: true,
+        reason: errorReason
+      },
+      destinationDomain
+    });
+  }
+
+  const extractedText = (ocrResult.text || '').trim();
+  const confidence = typeof ocrResult.confidence === 'number' ? ocrResult.confidence : 0;
+
+  // Purely visual image check: OCR successfully ran and genuinely detected NO text
+  if (extractedText.length === 0 || (confidence < 30 && extractedText.length === 0)) {
+    return {
+      action: 'allow',
+      riskScore: 0,
+      isVisualImage: true,
+      fileName,
+      explanation: 'No readable text detected in image (purely visual image).',
+      reasons: [],
+      ocrResult,
+      latencyMs: Math.round(performance.now() - startTime)
+    };
+  }
+
+  // Text was detected inside the image - analyze with full governance engine
+  const analysisResult = await handleAnalyzeImageText({
+    extractedText,
+    fileName,
+    destinationDomain
+  });
+
+  // Calculate redaction bounding boxes using Tesseract word/line coordinates
+  const redactionBoxes = (typeof calculateRedactionBoxes === 'function')
+    ? calculateRedactionBoxes(analysisResult.regexMatches || [], ocrResult)
+    : [];
+
+  return {
+    ...analysisResult,
+    ocrResult,
+    redactionBoxes
+  };
+}
+
 /**
  * Handles end-to-end evaluation pipeline for an attached file document.
  */
@@ -403,9 +585,7 @@ async function handleAnalyzeFile(payload) {
     }
   }
 
-  const settings = await new Promise((resolve) => {
-    chrome.storage.local.get(DEFAULT_SETTINGS, (data) => resolve(data));
-  });
+  const settings = await getExtensionSettings();
 
   let regexMatches = [];
   let chunkLLMResults = [];
@@ -657,6 +837,9 @@ if (typeof module !== 'undefined' && module.exports) {
     handleAnalyzePrompt,
     handleAnalyzeFile,
     handleAnalyzeBatchFiles,
-    handleAnalyzeImageText
+    handleAnalyzeImageText,
+    handleAnalyzeImageFile,
+    runOffscreenOcr,
+    setupOffscreenDocument
   };
 }

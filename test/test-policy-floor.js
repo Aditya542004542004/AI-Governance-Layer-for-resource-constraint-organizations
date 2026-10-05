@@ -104,6 +104,51 @@ function testFixedFloorBypassProtection() {
   assert.strictEqual(emailPolicy.redactedText.includes('[REDACTED_EMAIL]'), true, 'Email address MUST be replaced with [REDACTED_EMAIL]');
   console.log('  ✓ Verified: Email address student@vit.edu produced mandatory [REDACTED_EMAIL] redaction.');
 
+  // Test Case 7: Cryptographic Private Key (PEM) Blocked by Fixed Floor
+  const pkPrompt = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA05...\n-----END RSA PRIVATE KEY-----';
+  const pkMatches = runRegexChecks(pkPrompt);
+  assert.strictEqual(pkMatches.some(m => m.category === 'private_key'), true, 'Should detect PEM RSA private key');
+  const pkPolicy = evaluatePolicy({ promptText: pkPrompt, regexMatches: pkMatches, riskAnalysis: calculateRiskScore({ regexMatches: pkMatches }), customPolicyConfig: ultraPermissiveConfig });
+  assert.strictEqual(pkPolicy.action, 'block', 'Cryptographic Private Key MUST be BLOCKED by Fixed Floor');
+  assert.strictEqual(pkPolicy.fixedFloorTriggered, true, 'Fixed floor must be triggered for private key');
+  console.log('  ✓ Verified: Cryptographic Private Key blocked by Fixed Floor under permissive config.');
+
+  // Test Case 8: JSON Web Token (JWT) Blocked by Fixed Floor
+  const jwtPrompt = 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+  const jwtMatches = runRegexChecks(jwtPrompt);
+  assert.strictEqual(jwtMatches.some(m => m.category === 'jwt_token'), true, 'Should detect JWT token');
+  const jwtPolicy = evaluatePolicy({ promptText: jwtPrompt, regexMatches: jwtMatches, riskAnalysis: calculateRiskScore({ regexMatches: jwtMatches }), customPolicyConfig: ultraPermissiveConfig });
+  assert.strictEqual(jwtPolicy.action, 'block', 'JSON Web Token MUST be BLOCKED by Fixed Floor');
+  assert.strictEqual(jwtPolicy.fixedFloorTriggered, true, 'Fixed floor must be triggered for JWT');
+  console.log('  ✓ Verified: JSON Web Token (JWT) blocked by Fixed Floor under permissive config.');
+
+  // Test Case 9: Card Security Code (CVV/CVC) Blocked by Fixed Floor
+  const cvvPrompt = 'My card cvv: 842 for authentication';
+  const cvvMatches = runRegexChecks(cvvPrompt);
+  assert.strictEqual(cvvMatches.some(m => m.category === 'cvv_code'), true, 'Should detect CVV code');
+  const cvvPolicy = evaluatePolicy({ promptText: cvvPrompt, regexMatches: cvvMatches, riskAnalysis: calculateRiskScore({ regexMatches: cvvMatches }), customPolicyConfig: ultraPermissiveConfig });
+  assert.strictEqual(cvvPolicy.action, 'block', 'CVV code MUST be BLOCKED by Fixed Floor');
+  assert.strictEqual(cvvPolicy.fixedFloorTriggered, true, 'Fixed floor must be triggered for CVV');
+  console.log('  ✓ Verified: Card Security Code (CVV) blocked by Fixed Floor under permissive config.');
+
+  // Test Case 10: Indian PAN Card Redaction Verification
+  const panPrompt = 'Taxpayer PAN is ABCPE1234F for income verification.';
+  const panMatches = runRegexChecks(panPrompt);
+  assert.strictEqual(panMatches.some(m => m.category === 'pan'), true, 'Should detect Indian PAN card');
+  const panPolicy = evaluatePolicy({ promptText: panPrompt, regexMatches: panMatches, riskAnalysis: calculateRiskScore({ regexMatches: panMatches, destinationDomain: 'chatgpt.com' }) });
+  assert.strictEqual(panPolicy.action, 'redact', 'PAN Card MUST produce redact action on chatgpt.com');
+  assert.strictEqual(panPolicy.redactedText.includes('[REDACTED_PAN]'), true, 'PAN Card MUST be replaced with [REDACTED_PAN]');
+  console.log('  ✓ Verified: Indian PAN Card produced mandatory [REDACTED_PAN] redaction.');
+
+  // Test Case 11: International IBAN Redaction Verification
+  const ibanPrompt = 'Transfer to account GB82WEST12345698765432 via wire.';
+  const ibanMatches = runRegexChecks(ibanPrompt);
+  assert.strictEqual(ibanMatches.some(m => m.category === 'iban'), true, 'Should detect valid IBAN');
+  const ibanPolicy = evaluatePolicy({ promptText: ibanPrompt, regexMatches: ibanMatches, riskAnalysis: calculateRiskScore({ regexMatches: ibanMatches, destinationDomain: 'chatgpt.com' }) });
+  assert.strictEqual(ibanPolicy.action, 'redact', 'IBAN MUST produce redact action on chatgpt.com');
+  assert.strictEqual(ibanPolicy.redactedText.includes('[REDACTED_IBAN]'), true, 'IBAN MUST be replaced with [REDACTED_IBAN]');
+  console.log('  ✓ Verified: International IBAN produced mandatory [REDACTED_IBAN] redaction.');
+
   console.log('--- All Fixed Security Floor Tests Passed Successfully! ---\n');
 }
 

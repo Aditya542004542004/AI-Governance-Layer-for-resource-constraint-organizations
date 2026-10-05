@@ -33,6 +33,46 @@ function validateApiKeyMatch(matchStr) {
   return true;
 }
 
+/**
+ * Validates an Indian Permanent Account Number (PAN Card).
+ * Format: 5 uppercase letters, 4 digits, 1 uppercase letter (e.g. ABCPE1234F).
+ * 4th character must be one of the registered entity types:
+ * P (Person), C (Company), H (HUF), F (Firm), A (AOP), T (Trust), B (BOI), L (Local), J (Artificial Juridical), G (Government).
+ */
+function validatePan(pan) {
+  if (!pan || typeof pan !== 'string' || pan.length !== 10) return false;
+  const entityType = pan.charAt(3).toUpperCase();
+  return 'PCHFATBLJG'.includes(entityType);
+}
+
+/**
+ * Validates an International Bank Account Number (IBAN) using the ISO 13616 / MOD-97 algorithm.
+ */
+function validateIban(ibanStr) {
+  if (!ibanStr || typeof ibanStr !== 'string') return false;
+  const clean = ibanStr.replace(/[\s-]/g, '').toUpperCase();
+  if (clean.length < 15 || clean.length > 34) return false;
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(clean)) return false;
+
+  const rearranged = clean.slice(4) + clean.slice(0, 4);
+  let numericStr = '';
+  for (let i = 0; i < rearranged.length; i++) {
+    const code = rearranged.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      numericStr += (code - 55).toString();
+    } else {
+      numericStr += rearranged[i];
+    }
+  }
+
+  let remainder = 0;
+  for (let i = 0; i < numericStr.length; i += 7) {
+    const chunk = remainder.toString() + numericStr.substring(i, i + 7);
+    remainder = parseInt(chunk, 10) % 97;
+  }
+  return remainder === 1;
+}
+
 // Configurable regex patterns and detection definitions
 const REGEX_CONFIG = [
   {
@@ -44,9 +84,41 @@ const REGEX_CONFIG = [
     severity: 'critical'
   },
   {
+    category: 'private_key',
+    label: 'Cryptographic Private Key (PEM/SSH/RSA)',
+    pattern: /(?:-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9_-]+ )?PRIVATE KEY-----|-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)/gi,
+    severity: 'critical'
+  },
+  {
+    category: 'jwt_token',
+    label: 'JSON Web Token (JWT) / Bearer Credential',
+    pattern: /\beyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g,
+    severity: 'critical'
+  },
+  {
+    category: 'cvv_code',
+    label: 'Card Security Code (CVV/CVC)',
+    pattern: /\b(?:cvv[2]?|cvc[2]?|cid|security\s*code)\s*[:=is\s]+['"]?\b(\d{3,4})\b['"]?/gi,
+    severity: 'critical'
+  },
+  {
     category: 'email',
     label: 'Email Address',
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+    severity: 'medium'
+  },
+  {
+    category: 'pan',
+    label: 'Permanent Account Number (Indian PAN Card)',
+    pattern: /\b[A-Z]{5}[0-9]{4}[A-Z]\b/g,
+    validate: (matchStr) => validatePan(matchStr),
+    severity: 'medium'
+  },
+  {
+    category: 'iban',
+    label: 'International Bank Account Number (IBAN)',
+    pattern: /\b[A-Z]{2}[0-9]{2}(?:[0-9A-Za-z]{11,30}|(?:\s[0-9A-Za-z]{4}){2,7}(?:\s[0-9A-Za-z]{1,4})?)\b/g,
+    validate: (matchStr) => validateIban(matchStr),
     severity: 'medium'
   },
   {
@@ -196,7 +268,9 @@ function runRegexChecks(text) {
 
 // Support both ES Modules and script environment exports
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { runRegexChecks, luhnCheck, REGEX_CONFIG };
+  module.exports = { runRegexChecks, luhnCheck, validatePan, validateIban, REGEX_CONFIG };
 } else if (typeof globalThis !== 'undefined') {
   globalThis.runRegexChecks = runRegexChecks;
+  globalThis.validatePan = validatePan;
+  globalThis.validateIban = validateIban;
 }
