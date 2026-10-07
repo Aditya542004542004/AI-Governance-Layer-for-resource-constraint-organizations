@@ -893,10 +893,31 @@
   }
 
   /**
-   * Discovers all candidate <input type="file"> elements matching the attachment batch type.
-   * Accurately differentiates between document inputs and image-only inputs (e.g. in ChatGPT).
+   * Resolves the single most appropriate <input type="file"> element for the given files.
+   * Accurately prevents feeding non-image files into image-only inputs on ChatGPT,
+   * while preserving direct, untampered input targeting on Gemini.
    */
-  function findMatchingFileInputs(preferredTarget, files = []) {
+  function findSingleBestFileInput(preferredTarget, files = []) {
+    const hasNonImages = files.length > 0 && files.some(f => !isImageFile(f));
+
+    // 1. If preferredTarget is already a file input, check its 'accept' restriction
+    if (preferredTarget && preferredTarget.tagName === 'INPUT' && preferredTarget.type === 'file') {
+      const accept = (preferredTarget.getAttribute('accept') || '').toLowerCase().trim();
+      const isStrictlyImageOnly = accept.startsWith('image/') && !accept.includes('*/*') && !accept.includes('.pdf') && !accept.includes('.txt');
+      if (!hasNonImages || !isStrictlyImageOnly) {
+        return preferredTarget;
+      }
+    }
+
+    if (lastInteractedFileInput && document.contains(lastInteractedFileInput)) {
+      const accept = (lastInteractedFileInput.getAttribute('accept') || '').toLowerCase().trim();
+      const isStrictlyImageOnly = accept.startsWith('image/') && !accept.includes('*/*') && !accept.includes('.pdf') && !accept.includes('.txt');
+      if (!hasNonImages || !isStrictlyImageOnly) {
+        return lastInteractedFileInput;
+      }
+    }
+
+    // 2. Locate composer inputs
     const promptInput = findPromptInput();
     const composer = promptInput?.closest('form') 
       || document.querySelector('form') 
@@ -910,45 +931,25 @@
     const allDocInputs = Array.from(document.querySelectorAll('input[type="file"]'));
     const uniqueInputs = Array.from(new Set([...composerInputs, ...allDocInputs]));
 
-    if (uniqueInputs.length === 0) {
-      if (preferredTarget && preferredTarget.tagName === 'INPUT' && preferredTarget.type === 'file') {
-        return [preferredTarget];
-      }
-      if (lastInteractedFileInput && document.contains(lastInteractedFileInput)) {
-        return [lastInteractedFileInput];
-      }
-      return [];
-    }
-
-    const hasNonImages = files.length > 0 && files.some(f => !isImageFile(f));
-    const allImages = files.length > 0 && files.every(f => isImageFile(f));
+    if (uniqueInputs.length === 0) return null;
 
     if (hasNonImages) {
-      // Prioritize file inputs that are NOT restricted to images (e.g. accept="" or accept="*/*" or accept=".pdf,...")
-      const documentInputs = uniqueInputs.filter(inp => {
+      // Find input that accepts documents/text/all files (NOT strictly image-only)
+      const docInput = uniqueInputs.find(inp => {
         const accept = (inp.getAttribute('accept') || '').toLowerCase().trim();
-        return !accept.startsWith('image/') && (!accept.includes('image/') || accept.includes('*/*') || accept.includes('.pdf') || accept.includes('.txt'));
+        return !accept.startsWith('image/') || accept.includes('*/*') || accept.includes('.pdf') || accept.includes('.txt');
       });
-      if (documentInputs.length > 0) {
-        return documentInputs;
-      }
-    } else if (allImages) {
-      // Prioritize image inputs if present
-      const imageInputs = uniqueInputs.filter(inp => {
+      if (docInput) return docInput;
+    } else {
+      // Batch is all images: prefer image input if one exists
+      const imgInput = uniqueInputs.find(inp => {
         const accept = (inp.getAttribute('accept') || '').toLowerCase().trim();
         return accept.includes('image/');
       });
-      if (imageInputs.length > 0) {
-        return imageInputs;
-      }
+      if (imgInput) return imgInput;
     }
 
-    // Fallback: If preferred target exists, place it first
-    if (preferredTarget && uniqueInputs.includes(preferredTarget)) {
-      return [preferredTarget, ...uniqueInputs.filter(i => i !== preferredTarget)];
-    }
-
-    return uniqueInputs;
+    return uniqueInputs[uniqueInputs.length - 1];
   }
 
   /**
@@ -990,10 +991,12 @@
   function attachFilesToInput(fileInput, dataTransfer, files) {
     if (!fileInput) return false;
     try {
-      // 1. Reset value to empty string so React detects value transition
-      try {
-        fileInput.value = '';
-      } catch (_) {}
+      // 1. Reset React value tracker if present so React detects value transition
+      if (fileInput._valueTracker) {
+        try {
+          fileInput._valueTracker.setValue('');
+        } catch (_) {}
+      }
 
       // 2. Assign files via DataTransfer
       if (dataTransfer && dataTransfer.files) {
@@ -1027,11 +1030,11 @@
         persist: () => {}
       };
 
-      // 5. Trigger React props directly (onChange / onInput)
+      // 5. Trigger React props directly (onChange / onInput) if present (ChatGPT)
       const onChangeTriggered = triggerReactPropHandler(fileInput, 'onChange', reactChangeEvt);
       triggerReactPropHandler(fileInput, 'onInput', reactChangeEvt);
 
-      // 6. Always dispatch standard DOM events
+      // 6. Always dispatch standard DOM events (Gemini, Claude, native listeners)
       fileInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
       fileInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
 
@@ -1051,7 +1054,7 @@
     // 1. Walk up DOM tree from targetElement to documentElement looking for React onDrop prop
     let curr = (targetElement && document.contains(targetElement)) ? targetElement : findPromptInput();
     let onDropTriggered = false;
-    while (curr) {
+    while (curr && curr !== document.documentElement) {
       const dropEvt = {
         dataTransfer: dataTransfer,
         target: curr,
@@ -1073,18 +1076,14 @@
       curr = curr.parentElement;
     }
 
-    // 2. Dispatch native drag sequence: dragenter -> dragover -> drop across all containers
+    // 2. Dispatch native drag sequence: dragenter -> dragover -> drop ONLY on the active targets
+    // (Never dispatch to window or document to avoid desynchronizing Gemini/Wiz drop listeners)
     const targets = [];
     if (targetElement && document.contains(targetElement)) targets.push(targetElement);
     const promptInput = findPromptInput();
     if (promptInput && !targets.includes(promptInput)) targets.push(promptInput);
     const composer = promptInput?.closest('form') || document.querySelector('form') || document.querySelector('[data-testid="composer"]');
     if (composer && !targets.includes(composer)) targets.push(composer);
-    const mainEl = document.querySelector('main');
-    if (mainEl && !targets.includes(mainEl)) targets.push(mainEl);
-    if (!targets.includes(document.body)) targets.push(document.body);
-    if (!targets.includes(document)) targets.push(document);
-    if (!targets.includes(window)) targets.push(window);
 
     for (const t of targets) {
       try {
@@ -1117,7 +1116,8 @@
         } catch (_) {}
       }
 
-      const candidateInputs = findMatchingFileInputs(targetElement, files);
+      // 2. Resolve the single appropriate file input
+      const fileInput = findSingleBestFileInput(targetElement, files);
 
       if (eventType === 'paste' && dataTransfer) {
         // Paste event path
@@ -1144,26 +1144,17 @@
           }));
         } catch (_) {}
 
-        // Fallback: Also populate file inputs if paste did not trigger React attachment
-        if (!pasteTriggered && candidateInputs.length > 0) {
-          for (const inp of candidateInputs) {
-            attachFilesToInput(inp, dataTransfer, files);
-          }
+        // Fallback: If paste didn't trigger React, populate the single file input
+        if (!pasteTriggered && fileInput) {
+          attachFilesToInput(fileInput, dataTransfer, files);
         }
       } else if (eventType === 'drop' && dataTransfer) {
-        // Drag-and-drop path: Trigger drop pipeline AND synchronize composer fileInput
+        // Drag-and-drop path: Trigger drop pipeline exclusively (avoids duplicate/conflicting input change events)
         triggerDropPipeline(targetElement, dataTransfer);
-        if (candidateInputs.length > 0) {
-          for (const inp of candidateInputs) {
-            attachFilesToInput(inp, dataTransfer, files);
-          }
-        }
       } else {
         // File picker / Change path:
-        if (candidateInputs.length > 0) {
-          for (const inp of candidateInputs) {
-            attachFilesToInput(inp, dataTransfer, files);
-          }
+        if (fileInput) {
+          attachFilesToInput(fileInput, dataTransfer, files);
         } else if (targetElement && document.contains(targetElement)) {
           targetElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           targetElement.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
