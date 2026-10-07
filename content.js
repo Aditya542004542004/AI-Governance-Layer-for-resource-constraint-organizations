@@ -20,6 +20,7 @@
   let isScanningActive = false;
   let lastProcessedPrompt = '';
   let lastProcessedTime = 0;
+  let lastInteractedFileInput = null;
 
   console.log('[AI Governance] Content script active with File Upload Governance on:', window.location.hostname);
 
@@ -519,6 +520,7 @@
 
     const target = event.target;
     if (target && target.tagName === 'INPUT' && target.type === 'file' && target.files && target.files.length > 0) {
+      lastInteractedFileInput = target;
       const files = Array.from(target.files).filter(f => {
         const isDirMarker = (!f.name || !f.name.includes('.')) && (f.size === 0 || f.name.toLowerCase() === 'downloads');
         return !isDirMarker;
@@ -826,7 +828,7 @@
       {
         type: 'ANALYZE_BATCH_FILES',
         payload: {
-          files: extractedFilesData,
+          files: extractedFilesData.map(item => ({ extractedData: item.extractedData })),
           destinationDomain: window.location.hostname
         }
       },
@@ -891,8 +893,214 @@
   }
 
   /**
+   * Discovers all candidate <input type="file"> elements matching the attachment batch type.
+   * Accurately differentiates between document inputs and image-only inputs (e.g. in ChatGPT).
+   */
+  function findMatchingFileInputs(preferredTarget, files = []) {
+    const promptInput = findPromptInput();
+    const composer = promptInput?.closest('form') 
+      || document.querySelector('form') 
+      || document.querySelector('[data-testid="composer"]')
+      || promptInput?.closest('main')
+      || document.querySelector('main');
+
+    const composerInputs = composer 
+      ? Array.from(composer.querySelectorAll('input[type="file"]'))
+      : [];
+    const allDocInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    const uniqueInputs = Array.from(new Set([...composerInputs, ...allDocInputs]));
+
+    if (uniqueInputs.length === 0) {
+      if (preferredTarget && preferredTarget.tagName === 'INPUT' && preferredTarget.type === 'file') {
+        return [preferredTarget];
+      }
+      if (lastInteractedFileInput && document.contains(lastInteractedFileInput)) {
+        return [lastInteractedFileInput];
+      }
+      return [];
+    }
+
+    const hasNonImages = files.length > 0 && files.some(f => !isImageFile(f));
+    const allImages = files.length > 0 && files.every(f => isImageFile(f));
+
+    if (hasNonImages) {
+      // Prioritize file inputs that are NOT restricted to images (e.g. accept="" or accept="*/*" or accept=".pdf,...")
+      const documentInputs = uniqueInputs.filter(inp => {
+        const accept = (inp.getAttribute('accept') || '').toLowerCase().trim();
+        return !accept.startsWith('image/') && (!accept.includes('image/') || accept.includes('*/*') || accept.includes('.pdf') || accept.includes('.txt'));
+      });
+      if (documentInputs.length > 0) {
+        return documentInputs;
+      }
+    } else if (allImages) {
+      // Prioritize image inputs if present
+      const imageInputs = uniqueInputs.filter(inp => {
+        const accept = (inp.getAttribute('accept') || '').toLowerCase().trim();
+        return accept.includes('image/');
+      });
+      if (imageInputs.length > 0) {
+        return imageInputs;
+      }
+    }
+
+    // Fallback: If preferred target exists, place it first
+    if (preferredTarget && uniqueInputs.includes(preferredTarget)) {
+      return [preferredTarget, ...uniqueInputs.filter(i => i !== preferredTarget)];
+    }
+
+    return uniqueInputs;
+  }
+
+  /**
+   * Invokes React internal event handlers (e.g. onChange, onDrop, onPaste) directly
+   * via __reactProps$ or __reactFiber$ to ensure React component state updates reliably.
+   */
+  function triggerReactPropHandler(element, handlerName, syntheticEvent) {
+    if (!element) return false;
+    try {
+      const propsKey = Object.keys(element).find(k => k.startsWith('__reactProps$'));
+      if (propsKey && element[propsKey]) {
+        const props = element[propsKey];
+        if (typeof props[handlerName] === 'function') {
+          props[handlerName](syntheticEvent);
+          return true;
+        }
+      }
+
+      const fiberKey = Object.keys(element).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+      if (fiberKey && element[fiberKey]) {
+        let fiber = element[fiberKey];
+        while (fiber) {
+          if (fiber.memoizedProps && typeof fiber.memoizedProps[handlerName] === 'function') {
+            fiber.memoizedProps[handlerName](syntheticEvent);
+            return true;
+          }
+          fiber = fiber.return;
+        }
+      }
+    } catch (e) {
+      console.warn(`[AI Governance] Non-critical warning invoking React ${handlerName}:`, e);
+    }
+    return false;
+  }
+
+  /**
+   * Attaches allowed files to a target <input type="file"> and notifies React & the host DOM.
+   */
+  function attachFilesToInput(fileInput, dataTransfer, files) {
+    if (!fileInput) return false;
+    try {
+      // 1. Reset value to empty string so React detects value transition
+      try {
+        fileInput.value = '';
+      } catch (_) {}
+
+      // 2. Assign files via DataTransfer
+      if (dataTransfer && dataTransfer.files) {
+        try {
+          fileInput.files = dataTransfer.files;
+        } catch (_) {}
+      }
+
+      // 3. Fallback: Prototype setter for HTMLInputElement.files if needed
+      if (!fileInput.files || fileInput.files.length === 0) {
+        try {
+          const proto = Object.getPrototypeOf(fileInput);
+          const desc = Object.getOwnPropertyDescriptor(proto, 'files');
+          if (desc && desc.set) {
+            desc.set.call(fileInput, dataTransfer?.files || files);
+          }
+        } catch (_) {}
+      }
+
+      // 4. Construct synthetic React-compatible change event
+      const reactChangeEvt = {
+        target: fileInput,
+        currentTarget: fileInput,
+        bubbles: true,
+        cancelable: true,
+        defaultPrevented: false,
+        isTrusted: true,
+        nativeEvent: new Event('change', { bubbles: true }),
+        preventDefault: () => {},
+        stopPropagation: () => {},
+        persist: () => {}
+      };
+
+      // 5. Trigger React props directly (onChange / onInput)
+      const onChangeTriggered = triggerReactPropHandler(fileInput, 'onChange', reactChangeEvt);
+      triggerReactPropHandler(fileInput, 'onInput', reactChangeEvt);
+
+      // 6. Always dispatch standard DOM events
+      fileInput.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+      fileInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
+
+      return onChangeTriggered || Boolean(fileInput.files && fileInput.files.length > 0);
+    } catch (err) {
+      console.warn('[AI Governance] Error attaching files to input:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Executes drag-and-drop pipeline on target elements and invokes React onDrop props.
+   */
+  function triggerDropPipeline(targetElement, dataTransfer) {
+    if (!dataTransfer) return false;
+
+    // 1. Walk up DOM tree from targetElement to documentElement looking for React onDrop prop
+    let curr = (targetElement && document.contains(targetElement)) ? targetElement : findPromptInput();
+    let onDropTriggered = false;
+    while (curr) {
+      const dropEvt = {
+        dataTransfer: dataTransfer,
+        target: curr,
+        currentTarget: curr,
+        bubbles: true,
+        cancelable: true,
+        defaultPrevented: false,
+        isTrusted: true,
+        nativeEvent: new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }),
+        preventDefault: () => {},
+        stopPropagation: () => {},
+        persist: () => {}
+      };
+      if (triggerReactPropHandler(curr, 'onDrop', dropEvt)) {
+        onDropTriggered = true;
+        console.log('[AI Governance] Triggered React onDrop on element:', curr.tagName);
+        break;
+      }
+      curr = curr.parentElement;
+    }
+
+    // 2. Dispatch native drag sequence: dragenter -> dragover -> drop across all containers
+    const targets = [];
+    if (targetElement && document.contains(targetElement)) targets.push(targetElement);
+    const promptInput = findPromptInput();
+    if (promptInput && !targets.includes(promptInput)) targets.push(promptInput);
+    const composer = promptInput?.closest('form') || document.querySelector('form') || document.querySelector('[data-testid="composer"]');
+    if (composer && !targets.includes(composer)) targets.push(composer);
+    const mainEl = document.querySelector('main');
+    if (mainEl && !targets.includes(mainEl)) targets.push(mainEl);
+    if (!targets.includes(document.body)) targets.push(document.body);
+    if (!targets.includes(document)) targets.push(document);
+    if (!targets.includes(window)) targets.push(window);
+
+    for (const t of targets) {
+      try {
+        t.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, composed: true, dataTransfer }));
+        t.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, composed: true, dataTransfer }));
+        t.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, composed: true, dataTransfer }));
+      } catch (_) {}
+    }
+
+    return onDropTriggered;
+  }
+
+  /**
    * Re-dispatches allowed file attachments to the host page (ChatGPT, Claude, Gemini).
-   * Constructs synthetic DragEvent ('drop'), ClipboardEvent ('paste'), and synchronizes native <input type="file">.
+   * Supports React 18 SyntheticEvent execution, input[type="file"] synchronization,
+   * full DragEvent lifecycle, and ClipboardEvent pasting.
    */
   function dispatchOriginalFileAttach(files, targetElement, eventType = 'change') {
     isBypassingInterception = true;
@@ -909,57 +1117,53 @@
         } catch (_) {}
       }
 
-      // 2. Dispatch according to the original ingestion event type
-      if (eventType === 'drop' && dataTransfer) {
+      const candidateInputs = findMatchingFileInputs(targetElement, files);
+
+      if (eventType === 'paste' && dataTransfer) {
+        // Paste event path
+        const promptInput = findPromptInput() || (targetElement && document.contains(targetElement) ? targetElement : document.body);
+        const pasteEvt = {
+          clipboardData: dataTransfer,
+          target: promptInput,
+          currentTarget: promptInput,
+          bubbles: true,
+          cancelable: true,
+          defaultPrevented: false,
+          isTrusted: true,
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          persist: () => {}
+        };
+        const pasteTriggered = triggerReactPropHandler(promptInput, 'onPaste', pasteEvt);
         try {
-          const dropEvt = new DragEvent('drop', {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            dataTransfer: dataTransfer
-          });
-          const target = (targetElement && document.contains(targetElement)) 
-            ? targetElement 
-            : (findPromptInput() || document.querySelector('[contenteditable="true"]') || document.body);
-          target.dispatchEvent(dropEvt);
-        } catch (dropErr) {
-          console.warn('[AI Governance] DragEvent dispatch error:', dropErr);
-        }
-      } else if (eventType === 'paste' && dataTransfer) {
-        try {
-          const pasteEvt = new ClipboardEvent('paste', {
+          promptInput.dispatchEvent(new ClipboardEvent('paste', {
             bubbles: true,
             cancelable: true,
             composed: true,
             clipboardData: dataTransfer
-          });
-          const target = (targetElement && document.contains(targetElement)) 
-            ? targetElement 
-            : (findPromptInput() || document.querySelector('[contenteditable="true"]') || document.body);
-          target.dispatchEvent(pasteEvt);
-        } catch (pasteErr) {
-          console.warn('[AI Governance] ClipboardEvent dispatch error:', pasteErr);
+          }));
+        } catch (_) {}
+
+        // Fallback: Also populate file inputs if paste did not trigger React attachment
+        if (!pasteTriggered && candidateInputs.length > 0) {
+          for (const inp of candidateInputs) {
+            attachFilesToInput(inp, dataTransfer, files);
+          }
+        }
+      } else if (eventType === 'drop' && dataTransfer) {
+        // Drag-and-drop path: Trigger drop pipeline AND synchronize composer fileInput
+        triggerDropPipeline(targetElement, dataTransfer);
+        if (candidateInputs.length > 0) {
+          for (const inp of candidateInputs) {
+            attachFilesToInput(inp, dataTransfer, files);
+          }
         }
       } else {
-        // 3. Update hidden or active file input element (supports ChatGPT, Claude, and Gemini native React state)
-        const fileInput = (targetElement && targetElement.tagName === 'INPUT' && targetElement.type === 'file')
-          ? targetElement
-          : document.querySelector('input[type="file"]');
-
-        if (fileInput) {
-          if (dataTransfer && dataTransfer.files) {
-            try {
-              fileInput.files = dataTransfer.files;
-            } catch (_) {}
+        // File picker / Change path:
+        if (candidateInputs.length > 0) {
+          for (const inp of candidateInputs) {
+            attachFilesToInput(inp, dataTransfer, files);
           }
-          // Reset React's internal value tracker if present so React accepts synthetic change
-          if (fileInput._valueTracker) {
-            try {
-              fileInput._valueTracker.setValue('');
-            } catch (_) {}
-          }
-          fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-          fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         } else if (targetElement && document.contains(targetElement)) {
           targetElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           targetElement.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
