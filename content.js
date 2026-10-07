@@ -453,17 +453,83 @@
   // FILE UPLOAD INTERCEPTION HANDLERS
   // ==========================================
 
+  async function readDirectoryEntries(dirEntry) {
+    const reader = dirEntry.createReader();
+    const entries = await new Promise((resolve) => {
+      reader.readEntries((ents) => resolve(ents), () => resolve([]));
+    });
+
+    const files = [];
+    for (const ent of entries) {
+      if (ent.isFile) {
+        const file = await new Promise((resolve) => {
+          ent.file((f) => resolve(f), () => resolve(null));
+        });
+        if (file) files.push(file);
+      } else if (ent.isDirectory) {
+        const subFiles = await readDirectoryEntries(ent);
+        files.push(...subFiles);
+      }
+    }
+    return files;
+  }
+
+  async function resolveTransferFiles(dataTransfer) {
+    if (!dataTransfer) return [];
+
+    // 1. If webkitGetAsEntry is available, recursively expand directories or filter out directory markers
+    if (dataTransfer.items && dataTransfer.items.length > 0) {
+      const results = [];
+      for (const item of Array.from(dataTransfer.items)) {
+        if (item.kind !== 'file') continue;
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+        if (entry) {
+          if (entry.isDirectory) {
+            try {
+              const subFiles = await readDirectoryEntries(entry);
+              results.push(...subFiles);
+            } catch (_) {}
+          } else if (entry.isFile) {
+            const f = item.getAsFile();
+            if (f) results.push(f);
+          }
+        } else {
+          const f = item.getAsFile();
+          if (f) results.push(f);
+        }
+      }
+      if (results.length > 0) {
+        return results;
+      }
+    }
+
+    // 2. Fallback to dataTransfer.files, filtering out virtual directory markers (e.g. 'Downloads')
+    if (dataTransfer.files && dataTransfer.files.length > 0) {
+      return Array.from(dataTransfer.files).filter(f => {
+        const isDirMarker = (!f.name || !f.name.includes('.')) && (f.size === 0 || f.name.toLowerCase() === 'downloads');
+        return !isDirMarker;
+      });
+    }
+
+    return [];
+  }
+
   function handleFileInputChange(event) {
     if (isBypassingInterception) return;
 
     const target = event.target;
     if (target && target.tagName === 'INPUT' && target.type === 'file' && target.files && target.files.length > 0) {
-      const files = Array.from(target.files);
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      const files = Array.from(target.files).filter(f => {
+        const isDirMarker = (!f.name || !f.name.includes('.')) && (f.size === 0 || f.name.toLowerCase() === 'downloads');
+        return !isDirMarker;
+      });
+      if (files.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
 
-      processFileGovernance(files, target, 'change');
+        processFileGovernance(files, target, 'change');
+      }
     }
   }
 
@@ -474,16 +540,18 @@
     }
   }
 
-  function handleFileDrop(event) {
+  async function handleFileDrop(event) {
     if (isBypassingInterception) return;
 
-    if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
-      const files = Array.from(event.dataTransfer.files);
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    if (event.dataTransfer) {
+      const files = await resolveTransferFiles(event.dataTransfer);
+      if (files.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
 
-      processFileGovernance(files, event.target, 'drop');
+        processFileGovernance(files, event.target, 'drop');
+      }
     }
   }
 
@@ -491,12 +559,17 @@
     if (isBypassingInterception) return;
 
     if (event.clipboardData && event.clipboardData.files && event.clipboardData.files.length > 0) {
-      const files = Array.from(event.clipboardData.files);
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      const files = Array.from(event.clipboardData.files).filter(f => {
+        const isDirMarker = (!f.name || !f.name.includes('.')) && (f.size === 0 || f.name.toLowerCase() === 'downloads');
+        return !isDirMarker;
+      });
+      if (files.length > 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
 
-      processFileGovernance(files, event.target, 'paste');
+        processFileGovernance(files, event.target, 'paste');
+      }
     }
   }
 
@@ -867,30 +940,30 @@
         } catch (pasteErr) {
           console.warn('[AI Governance] ClipboardEvent dispatch error:', pasteErr);
         }
-      }
+      } else {
+        // 3. Update hidden or active file input element (supports ChatGPT, Claude, and Gemini native React state)
+        const fileInput = (targetElement && targetElement.tagName === 'INPUT' && targetElement.type === 'file')
+          ? targetElement
+          : document.querySelector('input[type="file"]');
 
-      // 3. Update hidden or active file input element (supports ChatGPT, Claude, and Gemini native React state)
-      const fileInput = (targetElement && targetElement.tagName === 'INPUT' && targetElement.type === 'file')
-        ? targetElement
-        : document.querySelector('input[type="file"]');
-
-      if (fileInput) {
-        if (dataTransfer && dataTransfer.files) {
-          try {
-            fileInput.files = dataTransfer.files;
-          } catch (_) {}
+        if (fileInput) {
+          if (dataTransfer && dataTransfer.files) {
+            try {
+              fileInput.files = dataTransfer.files;
+            } catch (_) {}
+          }
+          // Reset React's internal value tracker if present so React accepts synthetic change
+          if (fileInput._valueTracker) {
+            try {
+              fileInput._valueTracker.setValue('');
+            } catch (_) {}
+          }
+          fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        } else if (targetElement && document.contains(targetElement)) {
+          targetElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          targetElement.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         }
-        // Reset React's internal value tracker if present so React accepts synthetic change
-        if (fileInput._valueTracker) {
-          try {
-            fileInput._valueTracker.setValue('');
-          } catch (_) {}
-        }
-        fileInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        fileInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-      } else if (targetElement && document.contains(targetElement)) {
-        targetElement.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        targetElement.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       }
     } catch (err) {
       console.warn('[AI Governance] Non-critical warning during file attach re-dispatch:', err);

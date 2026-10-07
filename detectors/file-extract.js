@@ -106,9 +106,68 @@ async function fileToUint8Array(fileInput) {
 }
 
 /**
+ * Checks whether raw bytes represent valid UTF-8 plain text rather than compiled binary.
+ * Inspects a sample for null bytes (\0) and validates UTF-8 decoding.
+ * @param {Uint8Array} uint8Array 
+ * @returns {boolean}
+ */
+function isLikelyTextContent(uint8Array) {
+  if (!uint8Array || uint8Array.length === 0) return true;
+  const sampleSize = Math.min(uint8Array.length, 2048);
+  let nullByteCount = 0;
+  for (let i = 0; i < sampleSize; i++) {
+    if (uint8Array[i] === 0) nullByteCount++;
+  }
+  if (nullByteCount > 0) return false;
+
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    decoder.decode(uint8Array.subarray(0, sampleSize));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Extracts source code, markdown narrative, and cell outputs from a Jupyter Notebook (.ipynb) JSON.
+ * @param {string} rawJson 
+ * @returns {string} Concatenated code and markdown text
+ */
+function extractIpynbText(rawJson) {
+  try {
+    const nb = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+    if (nb && Array.isArray(nb.cells)) {
+      const parts = [];
+      for (const cell of nb.cells) {
+        const type = cell.cell_type || 'code';
+        const src = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+        if (src.trim()) {
+          parts.push(`[NOTEBOOK_${type.toUpperCase()}_CELL]\n${src}`);
+        }
+        // Inspect cell execution outputs for leaked tokens or data
+        if (Array.isArray(cell.outputs)) {
+          for (const out of cell.outputs) {
+            if (out.text) {
+              const outTxt = Array.isArray(out.text) ? out.text.join('') : (out.text || '');
+              if (outTxt && outTxt.trim()) parts.push(`[CELL_OUTPUT]\n${outTxt}`);
+            } else if (out.data && out.data['text/plain']) {
+              const dataTxt = Array.isArray(out.data['text/plain']) ? out.data['text/plain'].join('') : out.data['text/plain'];
+              if (dataTxt && dataTxt.trim()) parts.push(`[CELL_OUTPUT]\n${dataTxt}`);
+            }
+          }
+        }
+      }
+      return parts.join('\n\n');
+    }
+  } catch (_) {}
+  return typeof rawJson === 'string' ? rawJson : '';
+}
+
+/**
  * Unified text extraction entry point.
  * @param {Object|File} fileInput 
- * @returns {Promise<{fileName: string, fileType: string, fileSize: number, text: string, pages: Array, chunks: Array, unscannable: boolean, reason?: string}>}
+ * @returns {Promise<{fileName: string, fileType: string, fileSize: number, text: string, pages: Array, chunks: Array, unscannable: boolean, reason?: string, isFolderOrDirectory?: boolean}>}
  */
 async function extractTextFromFile(fileInput) {
   const fileName = fileInput.name || fileInput.fileName || 'unknown_file';
@@ -116,8 +175,26 @@ async function extractTextFromFile(fileInput) {
   const ext = fileName.split('.').pop().toLowerCase();
   const mimeType = (fileInput.type || '').toLowerCase();
 
+  // 0. Directory Container or Virtual Shelf Item Check (e.g. 'Downloads')
+  if ((!fileName.includes('.') && fileSize === 0) || fileName.toLowerCase() === 'downloads') {
+    return {
+      fileName,
+      fileType: 'directory',
+      fileSize: 0,
+      text: '',
+      pages: [],
+      chunks: [],
+      unscannable: false,
+      isFolderOrDirectory: true
+    };
+  }
+
   // 1. Unscannable Guardrail Check (Images, Audio, Binary, Compressed archives)
-  const unscannableExts = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'zip', 'tar', 'gz', '7z', 'exe', 'bin', 'mp3', 'mp4'];
+  const unscannableExts = [
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'zip', 'tar', 'gz', '7z', 'rar', 'bz2',
+    'exe', 'bin', 'dll', 'so', 'dylib', 'iso', 'mp3', 'mp4', 'wav', 'ogg', 'mov', 'avi',
+    'woff', 'woff2', 'ttf', 'eot'
+  ];
   if (unscannableExts.includes(ext) || mimeType.startsWith('image/') || mimeType.startsWith('audio/') || mimeType.startsWith('video/')) {
     return {
       fileName,
@@ -135,17 +212,37 @@ async function extractTextFromFile(fileInput) {
     const bytes = await fileToUint8Array(fileInput);
     let result = { fullText: '', pages: [], unscannable: false };
 
-    // 2. Plain Text & Config Formats (.txt, .env, .csv, .json, .md, .log, .xml, .yaml, .yml, .ini, .conf, .properties, .toml, .sh, .ts, .py, etc.)
-    const textExts = ['txt', 'env', 'csv', 'json', 'md', 'log', 'xml', 'js', 'html', 'py', 'yaml', 'yml', 'ini', 'conf', 'properties', 'toml', 'sh', 'bash', 'zsh', 'ps1', 'ts', 'tsx', 'jsx', 'sql', 'pem', 'key', 'cer', 'crt'];
-    const isEnvFile = fileName.startsWith('.env') || ext === 'env' || ext.startsWith('env') || fileName.endsWith('.env');
+    // 2. Comprehensive Plain Text & Code Formats
+    const textExts = [
+      'txt', 'text', 'env', 'csv', 'tsv', 'json', 'json5', 'jsonc', 'ipynb',
+      'md', 'markdown', 'log', 'out', 'xml', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'mts', 'cts', 'tsx',
+      'html', 'htm', 'xhtml', 'svg', 'css', 'scss', 'sass', 'less',
+      'py', 'pyw', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'config', 'properties',
+      'sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'psm1',
+      'c', 'h', 'cpp', 'hpp', 'cc', 'cxx', 'cs', 'java', 'kt', 'kts', 'scala', 'go', 'rs', 'swift', 'rb', 'php', 'lua', 'r', 'dart', 'pl', 'pm',
+      'sql', 'prisma', 'graphql', 'gql', 'proto',
+      'dockerfile', 'makefile', 'cmake', 'vagrantfile', 'gemfile', 'pipfile', 'lock',
+      'pem', 'key', 'cer', 'crt', 'pub'
+    ];
 
+    const isEnvFile = fileName.startsWith('.env') || ext === 'env' || ext.startsWith('env') || fileName.endsWith('.env');
+    const isIpynb = ext === 'ipynb' || fileName.endsWith('.ipynb');
     const isXmlMime = mimeType === 'text/xml' || mimeType === 'application/xml' || mimeType.endsWith('/xml');
-    if (isEnvFile || textExts.includes(ext) || mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('javascript') || isXmlMime) {
-      const plainText = new TextDecoder('utf-8').decode(bytes);
+    const isTextMime = mimeType.startsWith('text/') || mimeType.includes('json') || mimeType.includes('javascript') || isXmlMime;
+    const isKnownTextExt = isEnvFile || isIpynb || textExts.includes(ext);
+
+    // Dynamic heuristic text sniffing for extensionless or uncommon text formats
+    const isSniffedText = !isKnownTextExt && isLikelyTextContent(bytes);
+
+    if (isKnownTextExt || isTextMime || isSniffedText) {
+      let plainText = new TextDecoder('utf-8').decode(bytes);
+      if (isIpynb) {
+        plainText = extractIpynbText(plainText);
+      }
       result = {
         fullText: plainText,
         pages: [{ page: 1, text: plainText }],
-        unscannable: plainText.trim().length === 0
+        unscannable: false
       };
     }
     // 3. PDF Documents (.pdf)
@@ -187,7 +284,7 @@ async function extractTextFromFile(fileInput) {
         result.reason = 'PPTX extraction module unavailable (UNSCANNABLE_BINARY). Fail-Closed active.';
       }
     }
-    // 7. Unknown / Unrecognized Format
+    // 7. Unknown / Unrecognized Binary Format
     else {
       result.unscannable = true;
       result.fullText = '';
@@ -215,6 +312,9 @@ async function extractTextFromFile(fileInput) {
 
     const chunks = laawFn ? laawFn(text, 1500, 400) : chunkText(text, 8000, 600);
 
+    const isTextDoc = isKnownTextExt || isTextMime || isSniffedText;
+    const isUnscannable = result.unscannable || (!isTextDoc && text.trim().length === 0);
+
     return {
       fileName,
       fileType: ext,
@@ -222,11 +322,25 @@ async function extractTextFromFile(fileInput) {
       text: text,
       pages: result.pages || [],
       chunks: chunks,
-      unscannable: result.unscannable || text.trim().length === 0,
-      reason: result.reason || (text.trim().length === 0 ? 'Empty text content extracted.' : undefined)
+      unscannable: isUnscannable,
+      reason: result.reason || (isUnscannable ? 'Unscannable or empty binary format.' : undefined)
     };
 
   } catch (err) {
+    const isNotFoundOrDir = err.name === 'NotFoundError' || err.message?.includes('could not be found');
+    if (isNotFoundOrDir) {
+      console.warn(`[AI Governance] Skipped directory or unreadable virtual container: ${fileName}`);
+      return {
+        fileName,
+        fileType: ext || 'directory',
+        fileSize: 0,
+        text: '',
+        pages: [],
+        chunks: [],
+        unscannable: false,
+        isFolderOrDirectory: true
+      };
+    }
     console.error(`[AI Governance] Error extracting text from ${fileName}:`, err);
     return {
       fileName,

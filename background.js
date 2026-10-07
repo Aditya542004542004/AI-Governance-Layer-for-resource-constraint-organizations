@@ -557,8 +557,21 @@ async function handleAnalyzeImageFile(payload) {
  */
 async function handleAnalyzeFile(payload) {
   const { extractedData = {}, destinationDomain = 'unknown' } = payload;
-  const { fileName = 'unknown_file', text = '', chunks = [], unscannable = false, reason = '' } = extractedData;
+  const { fileName = 'unknown_file', text = '', chunks = [], unscannable = false, reason = '', isFolderOrDirectory = false } = extractedData;
   const startTime = performance.now();
+
+  // Directory container or virtual shelf item check (e.g. 'Downloads')
+  if (isFolderOrDirectory || (fileName.toLowerCase() === 'downloads' && (!text || text.length === 0))) {
+    return {
+      action: 'allow',
+      riskScore: 0,
+      fileName,
+      explanation: 'Skipping directory or virtual container.',
+      reasons: [],
+      isFolderOrDirectory: true,
+      latencyMs: 1
+    };
+  }
 
   // 1. Cryptographic File Deduplication (SHA-256 Cache Check < 5ms)
   // ONLY hash valid non-empty extracted text content (NEVER fall back to fileName!)
@@ -795,12 +808,18 @@ async function handleAnalyzeBatchFiles(payload) {
   const { files = [], destinationDomain = 'unknown' } = payload;
   const startTime = performance.now();
 
-  if (!Array.isArray(files) || files.length === 0) {
+  // Filter out any directory markers or virtual folder containers from the batch
+  const filesToAnalyze = (files || []).filter(f => {
+    const d = f.extractedData || f;
+    return !d.isFolderOrDirectory && !(d.fileName?.toLowerCase() === 'downloads' && (d.fileSize === 0 || !d.text));
+  });
+
+  if (!Array.isArray(filesToAnalyze) || filesToAnalyze.length === 0) {
     return { action: 'allow', riskScore: 0, fileResults: [], totalLatencyMs: 0 };
   }
 
   // Phase 1: Parallel Ingestion & SHA-256 Deduplication + Fast-Path Regex Check across ALL files
-  const phase1Results = await Promise.all(files.map(async (fileData) => {
+  const phase1Results = await Promise.all(filesToAnalyze.map(async (fileData) => {
     return handleAnalyzeFile({ extractedData: fileData.extractedData || fileData, destinationDomain });
   }));
 

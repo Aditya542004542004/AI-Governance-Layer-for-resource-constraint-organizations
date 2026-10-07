@@ -456,7 +456,7 @@ async function testOnDeviceImageOcrGovernance() {
   console.log('  ✓ On-Device WebAssembly Image OCR Governance tests passed.');
 }
 
-const { handleAnalyzeImageFile } = require('../background.js');
+const { handleAnalyzeImageFile, handleAnalyzeBatchFiles } = require('../background.js');
 
 async function testImageFileGovernancePipelineWithLLMOff() {
   console.log('Testing Image File Governance Pipeline with LLM OFF & Fail-Closed Protection...');
@@ -560,6 +560,77 @@ async function testImageFileGovernancePipelineWithLLMOff() {
   }
 }
 
+async function testJupyterAndDirectorySafety() {
+  console.log('Testing Jupyter Notebook (.ipynb), Python (.py), and Directory Safety in Batch Ingestion...');
+
+  // 1. Jupyter Notebook (.ipynb) with clean code
+  const cleanNotebook = {
+    cells: [
+      { cell_type: 'code', source: ['import pandas as pd\n', 'from sklearn.tree import DecisionTreeClassifier\n', 'clf = DecisionTreeClassifier()\n'], outputs: [] },
+      { cell_type: 'markdown', source: ['# Decision Tree Model\n', 'This notebook trains a decision tree model on customer demographic data.\n'] }
+    ]
+  };
+  const cleanIpynbResult = await extractTextFromFile({
+    name: 'decision_tree.ipynb',
+    buffer: Buffer.from(JSON.stringify(cleanNotebook), 'utf8')
+  });
+  assert.strictEqual(cleanIpynbResult.unscannable, false, 'Jupyter notebook (.ipynb) MUST be scannable text');
+  assert.strictEqual(cleanIpynbResult.text.includes('DecisionTreeClassifier'), true, 'Must extract code cells from notebook');
+  assert.strictEqual(cleanIpynbResult.text.includes('Decision Tree Model'), true, 'Must extract markdown cells from notebook');
+
+  // 2. Jupyter Notebook with sensitive secret in cell
+  const secretNotebook = {
+    cells: [
+      { cell_type: 'code', source: ['OPENAI_API_KEY = "sk-proj-123456789012345678901234"\n'], outputs: [] }
+    ]
+  };
+  const secretIpynbResult = await extractTextFromFile({
+    name: 'secret_notebook.ipynb',
+    buffer: Buffer.from(JSON.stringify(secretNotebook), 'utf8')
+  });
+  assert.strictEqual(secretIpynbResult.unscannable, false);
+  const secretMatches = runRegexChecks(secretIpynbResult.text);
+  assert.strictEqual(secretMatches.some(m => m.category === 'api_key'), true, 'Must catch API key inside notebook code cell');
+
+  // 3. Python (.py) file extraction
+  const pyResult = await extractTextFromFile({
+    name: 'train_model.py',
+    buffer: Buffer.from('import numpy as np\ndef sigmoid(x):\n    return 1 / (1 + np.exp(-x))\n', 'utf8')
+  });
+  assert.strictEqual(pyResult.unscannable, false, 'Python file MUST be scannable');
+  assert.strictEqual(pyResult.text.includes('sigmoid'), true, 'Must extract python function code');
+
+  // 4. Directory Container / Virtual Shelf marker (e.g. 'Downloads')
+  const dirMarkerResult = await extractTextFromFile({
+    name: 'Downloads',
+    size: 0,
+    buffer: Buffer.alloc(0)
+  });
+  assert.strictEqual(dirMarkerResult.isFolderOrDirectory, true, 'Downloads directory must be recognized as directory container');
+  assert.strictEqual(dirMarkerResult.unscannable, false, 'Directory container MUST NOT be marked unscannable');
+
+  // 5. Batch Ingestion with Directory Container + Clean Notebook
+  // (Verifies that 'Downloads' does NOT trigger Fast-Fail BLOCK and allows clean notebook through)
+  const batchResult = await handleAnalyzeBatchFiles({
+    files: [
+      {
+        file: { name: 'Downloads', size: 0 },
+        extractedData: dirMarkerResult
+      },
+      {
+        file: { name: 'decision_tree.ipynb', size: 1024 },
+        extractedData: cleanIpynbResult
+      }
+    ],
+    destinationDomain: 'chatgpt.com'
+  });
+
+  assert.strictEqual(batchResult.action, 'allow', 'Batch with Downloads directory container + clean notebook MUST be ALLOWED');
+  assert.strictEqual(batchResult.riskScore, 0, 'Risk score must be 0 for clean notebook');
+
+  console.log('  ✓ Jupyter Notebook (.ipynb), Python (.py), and Directory Safety tests passed.');
+}
+
 async function runAllFileGovernanceTests() {
   console.log('\n--- Running File Upload Governance Unit Tests ---');
   await testFileTextExtraction();
@@ -571,6 +642,7 @@ async function runAllFileGovernanceTests() {
   testFailClosedPolicyForImages();
   await testOnDeviceImageOcrGovernance();
   await testImageFileGovernancePipelineWithLLMOff();
+  await testJupyterAndDirectorySafety();
   console.log('--- All File Upload Governance Tests Passed Successfully! ---\n');
 }
 
